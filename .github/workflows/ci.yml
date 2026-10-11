@@ -16,6 +16,8 @@ jobs:
         with:
           node-version: "22"
       - run: python3 scripts/test-goal-runner.py
+      - run: python3 scripts/test-goal-acceptance.py
+      - run: python3 scripts/test-cli-updater.py
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked

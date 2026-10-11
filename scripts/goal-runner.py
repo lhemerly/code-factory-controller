@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Durable sequential operator for an approved implementation backlog."""
 import argparse
+import importlib.util
 import datetime
 import fcntl
 import hashlib
@@ -54,6 +55,15 @@ class Runner:
         if (self.state['goal_id'] != manifest['goal_id'] or hashes[:len(old)] != old
                 or self.state['initial_base'] != manifest['base_commit']):
             raise ValueError('existing approved tasks/base/goal cannot change; append tasks instead')
+        required = set(manifest.get('required_evidence', []))
+        if not set(self.state.get('required_evidence', [])).issubset(required):
+            raise ValueError('required completion evidence cannot be removed')
+        completion_hashes = [digest(c) for c in manifest.get('completion_checks', [])]
+        old_checks = self.state.get('completion_check_hashes', [])
+        if completion_hashes[:len(old_checks)] != old_checks:
+            raise ValueError('approved completion checks cannot be removed or changed')
+        self.state['required_evidence'] = sorted(required)
+        self.state['completion_check_hashes'] = completion_hashes
         self.state['task_hashes'] = hashes
         self.audit_required = True
         self.persist()
@@ -77,7 +87,22 @@ class Runner:
             self.audit_required = False
         if index == len(self.manifest['tasks']):
             self.state['remaining_work'] = self.manifest.get('remaining_work', [])
-            self.state['status'] = 'awaiting_plan' if self.state['remaining_work'] else 'completed'
+            self.state['unmet_evidence'] = self.state['required_evidence']
+            if self.state['remaining_work']:
+                self.state['status'] = 'awaiting_plan'
+            else:
+                # Backlog exhaustion is never sufficient for goal acceptance.
+                spec = importlib.util.spec_from_file_location('goal_acceptance', Path(__file__).with_name('goal-acceptance.py'))
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                commit = self.state['completed'][-1]['integrated_commit']
+                self.state['status'] = 'acceptance_running'
+                self.persist()
+                acceptance = module.run_acceptance(self.manifest, self.path, commit)
+                self.state['acceptance'] = acceptance
+                self.state['status'] = 'completed' if acceptance['passed'] else acceptance['status']
+                if acceptance['passed']:
+                    self.state['unmet_evidence'] = []
             self.persist()
             return False
         if not self.state['current']:

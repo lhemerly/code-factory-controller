@@ -64,4 +64,16 @@ class Tests(unittest.TestCase):
    path=pathlib.Path(d)/'state.json';manifest={'goal_id':'g','base_commit':'a'*40,'tasks':[{'job_id':'one'}]}
    r=m.Runner(manifest,path,api);r.state['completed']=[{'job_id':'one','integrated_commit':'b'*40,'delivery':{'commit':'b'*40}}];r.persist()
    r=m.Runner(manifest,path,api);self.assertFalse(r.step());self.assertEqual(r.state['audit_failure'],'one')
+ def test_backlog_exhaustion_without_acceptance_never_completes(self):
+  done={'state':'done','integrated_commit':'b'*40,'delivery':{'commit':'b'*40}}
+  with tempfile.TemporaryDirectory() as d:
+   r=m.Runner({'goal_id':'g','base_commit':'a'*40,'tasks':[{'job_id':'one'}],'remaining_work':[]},pathlib.Path(d)/'state.json',lambda op,body:done)
+   r.state['completed']=[{'job_id':'one','integrated_commit':'b'*40,'delivery':{'commit':'b'*40}}]
+   self.assertFalse(r.step());self.assertEqual(r.state['status'],'awaiting_acceptance')
+ def test_required_evidence_cannot_be_removed(self):
+  with tempfile.TemporaryDirectory() as d:
+   manifest={'goal_id':'g','base_commit':'a'*40,'tasks':[{'job_id':'one'}],'required_evidence':['vulkan_execution']}
+   path=pathlib.Path(d)/'state.json';m.Runner(manifest,path,lambda op,b:None)
+   manifest['required_evidence']=[]
+   with self.assertRaises(ValueError):m.Runner(manifest,path,lambda op,b:None)
 if __name__=='__main__':unittest.main()

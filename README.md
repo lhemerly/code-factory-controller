@@ -18,6 +18,26 @@ The first release targets **Linux**, **SQLite**, **OpenCode 1.19.0**, and **prot
 
 This is a local service for trusted workloads. Git worktrees and environment filtering do not isolate arbitrary processes. Deploy untrusted worker or verifier code in an appropriate container or VM with filesystem, network, credential and resource boundaries. The service does not install or configure that environment for you.
 
+## Install and automatically update the CLI
+
+On Linux with Python 3, Git and Rust available, clone this repository and run:
+
+```sh
+python3 scripts/code-factory.py install --auto-update
+```
+
+This installs `~/.local/bin/code-factory` and `code-factory-controller`. Ensure `~/.local/bin` is on PATH. `code-factory run` launches the durable backlog runner; `serve`, `operator` and `schemas` forward to the Rust controller.
+
+The user systemd timer checks the latest stable GitHub release daily. Updates build the tagged source with locked dependencies, run runner regression checks, and switch the active version only after success. Failed updates retain the installed version. Existing running controllers continue using their current executable; an update never restarts an active job or changes its configuration/database. Rust build dependencies and network access are required for updates.
+
+```sh
+code-factory --version
+code-factory update
+systemctl --user list-timers code-factory-update.timer
+```
+
+Releases, rather than every push to `main`, are the update boundary. The installer requires an available user systemd manager when `--auto-update` is requested; timer failures are visible with `journalctl --user -u code-factory-update.service`.
+
 ## Build and verify
 
 Install Rust 1.95.0 and Git on Linux:
@@ -101,7 +121,21 @@ Keep the operator capability in the host environment and both services running. 
 
 A manifest contains `goal_id`, the initial `base_commit`, a `tasks` array of approved job inputs (without `base_commit`, which is assigned when each task starts), optional `max_reworks` (default 1), and `remaining_work`. Every task still requires trusted registered verification checks and approved path boundaries. This runner consumes a host-approved backlog; it does not automatically invent or approve arbitrary verification commands.
 
-The state distinguishes completed jobs from the broad goal. Exhausting tasks with unresolved `remaining_work` yields `awaiting_plan` (exit 2), not completion. `needs_attention` also exits 2; run-budget exhaustion exits 75. `completed`/exit 0 means the approved manifest's tasks have verified deliveries and no declared remaining work. That result is bounded by the supplied checks; it does not prove unspecified requirements.
+The state distinguishes completed jobs from the broad goal. Exhausting tasks with unresolved `remaining_work` yields `awaiting_plan` (exit 2), not completion. `needs_attention` also exits 2; run-budget exhaustion exits 75. `completed`/exit 0 additionally requires a mandatory final acceptance suite to pass in a fresh checkout of the exact final integrated commit. Empty or missing acceptance suites yield `awaiting_acceptance`; nonzero exits, skipped checks, missing evidence and failed execution yield `acceptance_failed`. Both exit 2. That result is bounded by the approved checks; it does not prove unspecified requirements.
+
+## Mandatory final goal acceptance
+
+The goal manifest must declare an absolute `repository`, nonempty `required_evidence`, and nonempty `completion_checks`. Each host-approved check has `id`, `evidence_type`, `argv`, and optional `timeout_seconds` (1–3600). All required evidence types must be covered. Every command runs without controller credentials in a fresh checkout of the exact final integration commit. Logs and command receipts remain beside the goal state. Commands must exit zero and emit a single JSON object on stdout:
+
+```json
+{"passed":true,"skipped":false,"commit":"<exact tested commit>","evidence_type":"cpu_tests"}
+```
+
+For a goal requiring Vulkan execution, include `vulkan_execution` in `required_evidence`. Shader compilation, CPU reference tests and a Vulkan inventory probe cannot satisfy it. The trusted device execution verifier must additionally return a positive integer `gpu_dispatches`, `validation_passed:true`, and a `device` object containing `name`, `vendor_id` and `device_id`, based on actual dispatch/output validation. Missing devices, zero dispatches and skipped tests fail acceptance. These fields are validated from host-approved verifier output, not worker messages. The trusted verifier remains responsible for exercising representative behavior and authenticating its device/result evidence.
+
+Completion requirements cannot be removed on resume, and previously approved completion commands cannot be changed or removed; additional checks may be appended. Existing old manifests with no final suite no longer qualify for completion. An optional `verification_environment` allows only PATH, Rust/Cargo paths/toolchain, Vulkan driver selection and XDG runtime path; operator/worker capabilities are not inherited.
+
+A milestone's `done` means its declared independent checks and archive delivery passed. It does not mean the broad backend goal is finished. Backend acceptance must include the required CPU compatibility and Vulkan execution checks in its final contract.
 
 ## Validation and scope
 
