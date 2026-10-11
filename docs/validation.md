@@ -13,7 +13,7 @@ Both paths ran `npm ci`, type checks, the plugin regression suite, and a trusted
 
 The source repository's upstream branch was not modified by these runs. The delivery target was a local artifact, so these results do not claim a PR, remote push or deployed application change.
 
-The automated Rust suite covers 40 cases across durable state/replay, capabilities, bound sessions, stale attempts, verification, protected scope, artifact integrity, attempt history, timeout handling, unique verifier execution identities, parallel nonconflicting integration, deliberate merge conflict, free-only provider policy and adapter restart reconciliation. Adapter unit tests use a controlled HTTP stub; they are infrastructure evidence rather than live provider measurements.
+The automated Rust suite covers 41 cases across durable state/replay, capabilities, bound sessions, stale attempts, verification, protected scope, artifact integrity, attempt history, timeout handling, unique verifier execution identities, parallel nonconflicting integration, deliberate merge conflict, free-only provider policy and adapter restart reconciliation. Adapter unit tests use a controlled HTTP stub; they are infrastructure evidence rather than live provider measurements.
 
 The published plugin consumer also passes against the actual Rust HTTP service. A separate process test kills that service while a real verification command is running, restarts it, reconciles the original verification request, and completes one checked delivery. Persisted-state tests cover interrupted verification and the interval after an artifact write but before final acknowledgment. The live runs additionally killed and restarted the controller after completed delivery.
 

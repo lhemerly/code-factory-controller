@@ -179,7 +179,7 @@ async fn corrupted_delivery_is_blocked_not_replaced() {
     f.engine
         .save_if_current(&mut done, "interrupted delivery")
         .unwrap();
-    assert!(f.engine.advance("job").await.is_err());
+    assert_eq!(f.engine.advance("job").await.unwrap().state, "blocked");
     assert_eq!(std::fs::read_to_string(destination).unwrap(), "corrupt");
 }
 #[tokio::test]
@@ -618,4 +618,25 @@ async fn another_claim_key_does_not_allocate_new_work() {
         "no_task"
     );
     assert_eq!(f.engine.get("job").unwrap().attempts, 1);
+}
+#[tokio::test]
+async fn inherited_lock_descriptor_does_not_delay_normal_restart() {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    let f = Fixture::new().await;
+    let lock = f.config.data_dir.join("controller.lock");
+    let fd = std::fs::read_dir("/proc/self/fd")
+        .unwrap()
+        .filter_map(Result::ok)
+        .find(|entry| std::fs::read_link(entry.path()).is_ok_and(|p| p == lock))
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .parse::<i32>()
+        .unwrap();
+    let duplicate = unsafe { OwnedFd::from_raw_fd(libc::dup(fd)) };
+    let config = f.config.clone();
+    drop(f.engine);
+    let recovered = Engine::open(config).unwrap();
+    assert!(recovered.store.all().unwrap().is_empty());
+    drop(duplicate);
 }

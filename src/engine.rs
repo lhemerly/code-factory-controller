@@ -425,7 +425,13 @@ impl Engine {
             job.outcome = Some("integration_verified".into());
             self.save_if_current(&mut job, "integrated commit independently verified")?;
         }
-        self.deliver(&mut job).await?;
+        if self.deliver(&mut job).await.is_err() {
+            job.state = "blocked".into();
+            job.blocker = Some(
+                "delivery_blocked: inspect the destination and persisted artifact digest".into(),
+            );
+            self.save_if_current(&mut job, "delivery failed; existing artifacts preserved")?;
+        }
         Ok(job)
     }
     async fn deliver(&self, job: &mut Job) -> Result<()> {
@@ -515,5 +521,19 @@ impl Engine {
             }
         }
         Ok(j)
+    }
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        // Forked subprocesses can briefly inherit a close-on-exec descriptor.
+        // Release ownership explicitly rather than waiting for its last copy.
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            unsafe {
+                libc::flock(self._lock.as_raw_fd(), libc::LOCK_UN);
+            }
+        }
     }
 }
