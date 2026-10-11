@@ -58,4 +58,10 @@ class Tests(unittest.TestCase):
    path=pathlib.Path(d)/'state.json';manifest={'goal_id':'g','base_commit':'a'*40,'tasks':[{'job_id':'one'}]}
    r=m.Runner(manifest,path,api);r.state['current']={'input':task,'reworks':0,'repair_pending':True};r.persist()
    r=m.Runner(manifest,path,api);self.assertTrue(r.step());self.assertIn('requeue',calls);self.assertNotIn('abort',calls)
+ def test_completed_delivery_reaudited_on_restart(self):
+  def api(op,b):return {'state':'blocked','integrated_commit':'b'*40,'delivery':{'commit':'b'*40}}
+  with tempfile.TemporaryDirectory() as d:
+   path=pathlib.Path(d)/'state.json';manifest={'goal_id':'g','base_commit':'a'*40,'tasks':[{'job_id':'one'}]}
+   r=m.Runner(manifest,path,api);r.state['completed']=[{'job_id':'one','integrated_commit':'b'*40,'delivery':{'commit':'b'*40}}];r.persist()
+   r=m.Runner(manifest,path,api);self.assertFalse(r.step());self.assertEqual(r.state['audit_failure'],'one')
 if __name__=='__main__':unittest.main()

@@ -5,6 +5,7 @@ import datetime
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import tempfile
@@ -54,6 +55,7 @@ class Runner:
                 or self.state['initial_base'] != manifest['base_commit']):
             raise ValueError('existing approved tasks/base/goal cannot change; append tasks instead')
         self.state['task_hashes'] = hashes
+        self.audit_required = True
         self.persist()
 
     def persist(self):
@@ -62,6 +64,17 @@ class Runner:
 
     def step(self):
         index = len(self.state['completed'])
+        if self.audit_required or index == len(self.manifest['tasks']):
+            for completed in self.state['completed']:
+                audited = self.api('status', {'job_id': completed['job_id']})
+                if (audited['state'] != 'done'
+                        or audited.get('integrated_commit') != completed['integrated_commit']
+                        or audited.get('delivery') != completed['delivery']):
+                    self.state['status'] = 'needs_attention'
+                    self.state['audit_failure'] = completed['job_id']
+                    self.persist()
+                    return False
+            self.audit_required = False
         if index == len(self.manifest['tasks']):
             self.state['remaining_work'] = self.manifest.get('remaining_work', [])
             self.state['status'] = 'awaiting_plan' if self.state['remaining_work'] else 'completed'
@@ -140,10 +153,14 @@ def main():
     args = parser.parse_args()
     url = urlsplit(args.url)
     import ipaddress
-    if (url.scheme != 'http' or not ipaddress.ip_address(url.hostname).is_loopback
-            or url.path or url.query or url.fragment or url.username):
+    try:
+        loopback = ipaddress.ip_address(url.hostname).is_loopback
+    except ValueError:
+        loopback = False
+    if (url.scheme != 'http' or not loopback
+            or url.path or url.query or url.fragment or url.username or url.password):
         parser.error('controller URL must be a numeric loopback HTTP origin')
-    if args.max_seconds <= 0 or args.poll_seconds <= 0:
+    if args.max_seconds <= 0 or not math.isfinite(args.poll_seconds) or args.poll_seconds <= 0:
         parser.error('time limits must be positive')
     token = os.environ.get('FACTORY_OPERATOR_TOKEN', '')
     if len(token) < 32:
