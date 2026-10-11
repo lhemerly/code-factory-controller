@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createServer } from "node:net";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 const exec = promisify(execFile);
 const mode = process.argv[2] ?? "adapter";
 assert.ok(["adapter", "plugin"].includes(mode));
@@ -49,9 +49,8 @@ const controllerPort = await port(),
   opencodePort = await port();
 const controllerURL = `http://127.0.0.1:${controllerPort}`,
   opencodeURL = `http://127.0.0.1:${opencodePort}`;
-const operatorToken =
-  "operator-" + createHash("sha256").update(root).digest("hex");
-const workerToken = "worker-" + createHash("sha256").update(root).digest("hex");
+const operatorToken = "operator-" + randomBytes(32).toString("hex");
+const workerToken = "worker-" + randomBytes(32).toString("hex");
 const testReceipt =
   "import assert from 'node:assert/strict';import {receipt} from './src/protocol.ts';const r={verification_id:'v',candidate_commit:'a'.repeat(40),verification_profile_id:'unit',profile_version:'1',environment_id:'clean',outcome:'passed',commands:[{command:'test',exit_status:0}],artifacts:[]};assert.equal(receipt.safeParse(r).success,true);assert.equal(receipt.safeParse({...r,commands:[{command:'test',exit_status:1}]}).success,false);assert.equal(receipt.safeParse({...r,outcome:'failed',commands:[{command:'test',exit_status:1}]}).success,true);console.log('trusted receipt invariants passed');";
 const checks = [
