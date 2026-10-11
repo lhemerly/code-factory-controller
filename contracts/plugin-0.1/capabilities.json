@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "protocol_min": {
+      "type": "string",
+      "const": "0.1"
+    },
+    "protocol_max": {
+      "type": "string",
+      "const": "0.1"
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "factory_status",
+          "factory_next_task",
+          "factory_request_verification",
+          "factory_submit_candidate"
+        ]
+      }
+    },
+    "worker_adapters": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      }
+    },
+    "verification_profiles": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      }
+    }
+  },
+  "required": [
+    "protocol_min",
+    "protocol_max",
+    "operations",
+    "worker_adapters",
+    "verification_profiles"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "job_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "attempt_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "lease_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "candidate_commit": {
+      "type": "string",
+      "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"
+    },
+    "verification_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "change_summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000
+    },
+    "artifact_manifest": {
+      "maxItems": 100,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "reference": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "reference",
+          "sha256"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    }
+  },
+  "required": [
+    "job_id",
+    "attempt_id",
+    "lease_id",
+    "candidate_commit",
+    "verification_id",
+    "change_summary",
+    "artifact_manifest",
+    "idempotency_key"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,21 @@
+{
+  "job_id": "approved-change",
+  "base_commit": "REPLACE_WITH_FULL_APPROVED_GIT_COMMIT",
+  "task_brief": "Describe one approved application behavior change and commit it.",
+  "acceptance_criteria": [
+    {
+      "behavior": "Approved application behavior",
+      "check_ids": ["unit-tests"],
+      "expected": "Relevant registered tests pass"
+    },
+    {
+      "behavior": "Static compatibility",
+      "check_ids": ["type-checks"],
+      "expected": "Type checks pass"
+    }
+  ],
+  "allowed_paths": ["src"],
+  "protected_paths": ["package.json", "package-lock.json", "test", "scripts"],
+  "verification_profile_id": "application-checks",
+  "policy_version": "approved-policy-1"
+}

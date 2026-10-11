@@ -1,0 +1,86 @@
+{
+  "date": "2026-10-11",
+  "task": "Passed receipt schemas must reject nonzero command exit statuses",
+  "runs": [
+    {
+      "passed": true,
+      "mode": "adapter",
+      "controller_version": "0.1.0",
+      "opencode_version": "1.19.0",
+      "model": "opencode/big-pickle",
+      "source_repository": "https://github.com/lhemerly/opencode-factory-plugin",
+      "base_commit": "b169b30f4be8109e8fb054334ca8a78639d29225",
+      "candidate_commit": "3c568bfd5bd846d1b611b22a905315a35ab47b62",
+      "integrated_commit": "3c568bfd5bd846d1b611b22a905315a35ab47b62",
+      "delivery": {
+        "reference": "artifact:1fdce2fc6ccca3a2cebacd53ecd03a07d85be331f744e004a361baa2616b6f1c.tar",
+        "sha256": "5553a1950d0084535b4f25d07042bc9126ab1f2b76020255d55f49078feca134",
+        "commit": "3c568bfd5bd846d1b611b22a905315a35ab47b62"
+      },
+      "reported_cost": 0,
+      "final_state": "done",
+      "final_outcome": "verified_delivery",
+      "restart_reconciled": true,
+      "model_tool_calls": [
+        "bash",
+        "read",
+        "read",
+        "read",
+        "read",
+        "edit",
+        "edit",
+        "edit",
+        "bash",
+        "bash",
+        "bash",
+        "bash",
+        "bash",
+        "bash",
+        "bash",
+        "bash"
+      ]
+    },
+    {
+      "passed": true,
+      "mode": "plugin",
+      "controller_version": "0.1.0",
+      "opencode_version": "1.19.0",
+      "model": "opencode/big-pickle",
+      "source_repository": "https://github.com/lhemerly/opencode-factory-plugin",
+      "base_commit": "b169b30f4be8109e8fb054334ca8a78639d29225",
+      "candidate_commit": "f24942b65f973b0934e61429fe2dbf8033183fcc",
+      "integrated_commit": "f24942b65f973b0934e61429fe2dbf8033183fcc",
+      "delivery": {
+        "reference": "artifact:22f18ee14fd1c5a15852cfb90c77339ae7d71134cc2e3f243ddac5e691ae71d9.tar",
+        "sha256": "8d40377d594f24bb907452e258b88df70019eca10efdcfe17d00f6498d9aa379",
+        "commit": "f24942b65f973b0934e61429fe2dbf8033183fcc"
+      },
+      "reported_cost": 0,
+      "final_state": "done",
+      "final_outcome": "verified_delivery",
+      "restart_reconciled": true,
+      "model_tool_calls": [
+        "factory_next_task",
+        "bash",
+        "read",
+        "read",
+        "bash",
+        "read",
+        "edit",
+        "edit",
+        "edit",
+        "bash",
+        "bash",
+        "bash",
+        "bash",
+        "bash",
+        "bash",
+        "factory_request_verification",
+        "factory_status",
+        "bash",
+        "factory_status",
+        "factory_submit_candidate"
+      ]
+    }
+  ]
+}

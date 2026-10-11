@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Config",
+  "type": "object",
+  "properties": {
+    "data_dir": {
+      "type": "string"
+    },
+    "delivery_dir": {
+      "type": "string"
+    },
+    "integration_ref": {
+      "type": "string"
+    },
+    "lease_seconds": {
+      "type": "integer",
+      "format": "int64"
+    },
+    "max_attempts": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "max_workers": {
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "opencode_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "policy": {
+      "$ref": "#/$defs/ModelPolicy"
+    },
+    "profiles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Profile"
+      }
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "repository": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "project_id",
+    "repository",
+    "data_dir",
+    "delivery_dir",
+    "integration_ref",
+    "profiles",
+    "policy",
+    "max_workers",
+    "lease_seconds",
+    "max_attempts"
+  ],
+  "$defs": {
+    "Check": {
+      "type": "object",
+      "properties": {
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "argv"
+      ]
+    },
+    "ModelPolicy": {
+      "type": "object",
+      "properties": {
+        "cooldown_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "data_approved": {
+          "type": "boolean"
+        },
+        "free_only": {
+          "type": "boolean"
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "spend_ceiling": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "models",
+        "free_only",
+        "spend_ceiling",
+        "data_approved",
+        "cooldown_seconds"
+      ]
+    },
+    "Profile": {
+      "type": "object",
+      "properties": {
+        "checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Check"
+          }
+        },
+        "id": {
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version",
+        "checks",
+        "timeout_seconds"
+      ]
+    }
+  }
+}

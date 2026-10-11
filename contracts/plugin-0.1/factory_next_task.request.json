@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "project_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "adapter_capabilities": {
+      "maxItems": 20,
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      }
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "protocol_version": {
+      "type": "string",
+      "const": "0.1"
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    }
+  },
+  "required": [
+    "project_id",
+    "session_id",
+    "adapter_capabilities",
+    "idempotency_key",
+    "protocol_version",
+    "request_id"
+  ],
+  "additionalProperties": false
+}

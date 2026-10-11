@@ -1,0 +1,33 @@
+{
+  "project_id": "example-project",
+  "repository": "/absolute/path/approved-repository",
+  "data_dir": "/absolute/path/controller-data",
+  "delivery_dir": "/absolute/path/deliveries",
+  "integration_ref": "refs/heads/factory-integration",
+  "profiles": [
+    {
+      "id": "application-checks",
+      "version": "1",
+      "timeout_seconds": 300,
+      "checks": [
+        {
+          "id": "dependencies",
+          "argv": ["npm", "ci", "--no-audit", "--no-fund"]
+        },
+        { "id": "unit-tests", "argv": ["npm", "test"] },
+        { "id": "type-checks", "argv": ["npm", "run", "check"] }
+      ]
+    }
+  ],
+  "policy": {
+    "models": ["opencode/big-pickle"],
+    "free_only": true,
+    "spend_ceiling": 0,
+    "data_approved": true,
+    "cooldown_seconds": 60
+  },
+  "max_workers": 2,
+  "lease_seconds": 1800,
+  "max_attempts": 3,
+  "opencode_url": "http://127.0.0.1:4096"
+}

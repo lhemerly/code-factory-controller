@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "JobInput",
+  "type": "object",
+  "properties": {
+    "acceptance_criteria": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Criterion"
+      }
+    },
+    "allowed_paths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "base_commit": {
+      "type": "string"
+    },
+    "job_id": {
+      "type": "string"
+    },
+    "policy_version": {
+      "type": "string"
+    },
+    "protected_paths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "task_brief": {
+      "type": "string"
+    },
+    "verification_profile_id": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "job_id",
+    "base_commit",
+    "task_brief",
+    "acceptance_criteria",
+    "allowed_paths",
+    "protected_paths",
+    "verification_profile_id",
+    "policy_version"
+  ],
+  "$defs": {
+    "Criterion": {
+      "type": "object",
+      "properties": {
+        "behavior": {
+          "type": "string"
+        },
+        "check_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "expected": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "behavior",
+        "check_ids",
+        "expected"
+      ]
+    }
+  }
+}

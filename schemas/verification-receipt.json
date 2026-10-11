@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Receipt",
+  "type": "object",
+  "properties": {
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Artifact"
+      }
+    },
+    "candidate_commit": {
+      "type": "string"
+    },
+    "clean_checkout": {
+      "type": "boolean"
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/CommandReceipt"
+      }
+    },
+    "config_digest": {
+      "type": "string"
+    },
+    "environment": true,
+    "environment_id": {
+      "type": "string"
+    },
+    "feature_map": true,
+    "outcome": {
+      "type": "string"
+    },
+    "profile_version": {
+      "type": "string"
+    },
+    "verification_id": {
+      "type": "string"
+    },
+    "verification_profile_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "verification_id",
+    "candidate_commit",
+    "verification_profile_id",
+    "profile_version",
+    "environment_id",
+    "outcome",
+    "commands",
+    "artifacts",
+    "config_digest",
+    "clean_checkout",
+    "feature_map",
+    "environment"
+  ],
+  "$defs": {
+    "Artifact": {
+      "type": "object",
+      "properties": {
+        "reference": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "reference",
+        "sha256"
+      ]
+    },
+    "CommandReceipt": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "exit_status": {
+          "type": "integer",
+          "format": "int32"
+        }
+      },
+      "required": [
+        "command",
+        "exit_status"
+      ]
+    }
+  }
+}

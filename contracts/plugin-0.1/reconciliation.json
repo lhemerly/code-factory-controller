@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "anyOf": [
+    {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "const": "not_found"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "const": "pending"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "const": "complete"
+        },
+        "payload": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        },
+        "response": {
+          "type": "object",
+          "properties": {
+            "protocol_version": {
+              "type": "string",
+              "const": "0.1"
+            },
+            "request_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "project_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "session_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "result": {},
+            "error": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "enum": [
+                    "validation_failed",
+                    "policy_denied",
+                    "stale_lease",
+                    "provider_cooldown",
+                    "controller_unavailable",
+                    "unsupported_capability",
+                    "incompatible_version",
+                    "outcome_unknown",
+                    "idempotency_conflict"
+                  ]
+                },
+                "retry_after": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                }
+              },
+              "required": [
+                "code"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "protocol_version",
+            "request_id",
+            "project_id",
+            "session_id"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "status",
+        "payload",
+        "response"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}

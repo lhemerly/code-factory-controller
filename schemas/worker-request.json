@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WorkerRequest",
+  "type": "object",
+  "properties": {
+    "adapter_capabilities": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "artifact_manifest": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "#/$defs/Artifact"
+      }
+    },
+    "attempt_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "candidate_commit": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "change_summary": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "idempotency_key": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "job_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "lease_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "protocol_version": {
+      "type": "string"
+    },
+    "request_id": {
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "verification_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "verification_profile_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "protocol_version",
+    "request_id",
+    "project_id",
+    "session_id"
+  ],
+  "$defs": {
+    "Artifact": {
+      "type": "object",
+      "properties": {
+        "reference": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "reference",
+        "sha256"
+      ]
+    }
+  }
+}

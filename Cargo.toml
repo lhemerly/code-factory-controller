@@ -1,0 +1,26 @@
+[package]
+name = "code-factory-controller"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+description = "Durable Rust controller for code factories"
+repository = "https://github.com/lhemerly/code-factory-controller"
+
+[dependencies]
+anyhow = "=1.0.102"
+axum = "=0.8.9"
+chrono = { version = "=0.4.45", features = ["serde"] }
+clap = { version = "=4.6.1", features = ["derive"] }
+libc = "=0.2.186"
+reqwest = { version = "=0.12.28", default-features = false, features = ["json", "rustls-tls", "stream"] }
+rusqlite = { version = "=0.38.0", features = ["bundled"] }
+schemars = "=1.2.2"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.154"
+sha2 = "=0.10.9"
+tokio = { version = "=1.53.2", features = ["full"] }
+uuid = { version = "=1.28.0", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tempfile = "=3.27.0"

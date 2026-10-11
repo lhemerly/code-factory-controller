@@ -1,0 +1,36 @@
+name: Verify controller
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  rust-and-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.95.0"
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --locked
+      - run: cargo run --locked -- schemas --output schemas
+      - run: git diff --exit-code -- schemas
+      - name: Load independent plugin consumer
+        run: |
+          git clone https://github.com/lhemerly/opencode-factory-plugin.git /tmp/factory-plugin
+          git -C /tmp/factory-plugin checkout b169b30f4be8109e8fb054334ca8a78639d29225
+          npm --prefix /tmp/factory-plugin ci
+          npm --prefix /tmp/factory-plugin run build
+      - run: node scripts/plugin-contract.mjs
+        env:
+          FACTORY_PLUGIN_DIR: /tmp/factory-plugin
+      - run: node scripts/plugin-contract.mjs --crash-verification
+        env:
+          FACTORY_PLUGIN_DIR: /tmp/factory-plugin
+      - run: cargo package --locked --allow-dirty --no-verify

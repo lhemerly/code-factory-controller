@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "verification_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "running"
+      ]
+    }
+  },
+  "required": [
+    "verification_id",
+    "status"
+  ],
+  "additionalProperties": false
+}
