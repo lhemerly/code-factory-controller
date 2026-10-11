@@ -88,6 +88,21 @@ Worker capabilities stay bound to one job and session. Use a fresh host capabili
 
 Plugin candidate submission returns `accepted_for_integration`; only the controller can transition to `done` after integrated verification and actual artifact delivery.
 
+## Sustained implementation backlogs
+
+The Linux host runner in `scripts/goal-runner.py` executes an approved sequence of jobs in adapter mode. Each job starts from the previous independently verified integration commit. The runner persists admission intent before contacting the controller, reconciles existing job identities on restart, retains exact integrated receipts and deliveries, and bounds verification rework. It respects controller provider cooldowns and stops on paused, blocked or ambiguous effects.
+
+```sh
+python3 scripts/goal-runner.py --manifest /absolute/path/goal.json \
+  --state /absolute/path/goal-state.json --max-seconds 86400
+```
+
+Keep the operator capability in the host environment and both services running. Interrupting or exhausting the host runner's time budget retains the active job; invoke it again with the same manifest/state to resume. One runner owns each state file through a Linux file lock. Jobs already listed in the manifest are immutable; append new approved tasks to extend a backlog.
+
+A manifest contains `goal_id`, the initial `base_commit`, a `tasks` array of approved job inputs (without `base_commit`, which is assigned when each task starts), optional `max_reworks` (default 1), and `remaining_work`. Every task still requires trusted registered verification checks and approved path boundaries. This runner consumes a host-approved backlog; it does not automatically invent or approve arbitrary verification commands.
+
+The state distinguishes completed jobs from the broad goal. Exhausting tasks with unresolved `remaining_work` yields `awaiting_plan` (exit 2), not completion. `needs_attention` also exits 2; run-budget exhaustion exits 75. `completed`/exit 0 means the approved manifest's tasks have verified deliveries and no declared remaining work. That result is bounded by the supplied checks; it does not prove unspecified requirements.
+
 ## Validation and scope
 
 The test suite covers durable replay, restart recovery, independent verification, altered evidence, stale leases, protected paths, parallel integration and conflicts, provider policy, operator isolation, timeouts and adapter reconciliation. The independently packaged plugin's contract also passes against the Rust service.

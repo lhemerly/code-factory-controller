@@ -3,3 +3,6 @@
 /artifacts/
 .env
 *.sqlite*
+
+__pycache__/
+*.pyc
