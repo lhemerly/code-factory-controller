@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.request
+import urllib.error
 
 REPO = 'lhemerly/code-factory-controller'
 ROOT = Path.home() / '.local/share/code-factory'
@@ -35,8 +36,16 @@ def update(tag=None):
         fcntl.flock(lock, fcntl.LOCK_EX)
         if tag is None:
             request = urllib.request.Request(f'https://api.github.com/repos/{REPO}/releases/latest', headers={'User-Agent':'code-factory-updater','Accept':'application/vnd.github+json'})
-            with urllib.request.urlopen(request, timeout=30) as response:
-                release = json.load(response)
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    release = json.load(response)
+            except urllib.error.HTTPError:
+                if not shutil.which('gh'):
+                    raise
+                # Some hosts receive stale anonymous API responses. Use the
+                # existing GitHub CLI authentication without printing credentials.
+                host_env = {k:v for k,v in os.environ.items() if k in {'PATH','HOME','XDG_CONFIG_HOME'}}
+                release = json.loads(subprocess.check_output(['gh','api',f'repos/{REPO}/releases/latest'],env=host_env,timeout=30))
             if release.get('draft') or release.get('prerelease'):
                 raise ValueError('latest release must be public and stable')
             tag = release['tag_name']
@@ -51,6 +60,7 @@ def update(tag=None):
         versions.mkdir(exist_ok=True)
         destination = versions / tag
         env = {k:v for k,v in os.environ.items() if k in {'PATH','HOME','RUSTUP_HOME','CARGO_HOME','RUSTUP_TOOLCHAIN','TMPDIR'}}
+        env['CARGO_TARGET_DIR'] = str(ROOT/'build-cache')
         if not destination.exists():
             with tempfile.TemporaryDirectory(prefix='.install-',dir=versions) as temp:
                 source = Path(temp) / 'source'
@@ -58,7 +68,7 @@ def update(tag=None):
                 subprocess.run(['cargo','build','--locked','--release'],cwd=source,env=env,check=True,timeout=1800)
                 for test in ('test-goal-runner.py','test-goal-acceptance.py','test-cli-updater.py'):
                     subprocess.run([sys.executable,str(source/'scripts'/test)],env=env,check=True,timeout=60)
-                binary = source/'target/release/code-factory-controller'
+                binary = ROOT/'build-cache/release/code-factory-controller'
                 subprocess.run([str(binary),'--version'],env=env,check=True,timeout=10)
                 staged = Path(temp) / tag
                 (staged/'bin').mkdir(parents=True)

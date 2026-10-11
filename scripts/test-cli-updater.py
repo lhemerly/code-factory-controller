@@ -22,4 +22,10 @@ class Tests(unittest.TestCase):
    root=Path(d);current=root/'versions/v0.2.0';current.mkdir(parents=True);(root/'current').symlink_to(current)
    with patch.object(c,'ROOT',root),patch.object(c.subprocess,'run') as run:
     self.assertEqual(c.update('v0.2.0'),'v0.2.0');self.assertEqual(c.update('v0.1.0'),'v0.2.0');run.assert_not_called()
+ def test_release_lookup_falls_back_to_existing_github_cli(self):
+  import urllib.error
+  with tempfile.TemporaryDirectory() as d:
+   root=Path(d);current=root/'versions/v0.2.0';current.mkdir(parents=True);(root/'current').symlink_to(current)
+   with patch.object(c,'ROOT',root),patch.object(c.urllib.request,'urlopen',side_effect=urllib.error.HTTPError('url',404,'stale',{},None)),patch.object(c.shutil,'which',return_value='/usr/bin/gh'),patch.object(c.subprocess,'check_output',return_value=b'{"tag_name":"v0.2.0","draft":false,"prerelease":false}') as gh:
+    self.assertEqual(c.update(),'v0.2.0');gh.assert_called_once()
 if __name__=='__main__':unittest.main()
