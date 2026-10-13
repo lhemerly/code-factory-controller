@@ -51,6 +51,13 @@ pub fn within(path: &str, prefix: &str) -> bool {
 pub struct Check {
     pub id: String,
     pub argv: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_contract: Option<ResultContract>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResultContract {
+    pub evidence_type: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -136,6 +143,10 @@ impl Config {
                     || check.argv.is_empty()
                     || check.argv.iter().any(|a| a.len() > 4000)
                     || check.argv.join(" ").len() > 1000
+                    || check
+                        .result_contract
+                        .as_ref()
+                        .is_some_and(|contract| !valid_id(&contract.evidence_type))
                 {
                     bail!("invalid check");
                 }

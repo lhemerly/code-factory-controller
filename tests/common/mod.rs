@@ -39,6 +39,7 @@ impl Fixture {
                 checks: vec![Check {
                     id: "result".into(),
                     argv: vec!["/usr/bin/test".into(), "-s".into(), "result.txt".into()],
+                    result_contract: None,
                 }],
             }],
             policy: ModelPolicy {

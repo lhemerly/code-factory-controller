@@ -24,6 +24,16 @@ Each verifier invocation uses a fresh clean clone and unique execution/log ident
 
 Receipts record profile version/digest, environment identity, Git version, OS/architecture, clean-start status, command exit statuses, feature evidence and artifact digests. Dependency versions belong to the verified commit's lockfiles and captured installation/check logs. “Clean” describes the checkout before checks; builds can generate files afterward.
 
+Checks may declare a structured result contract. Such checks must produce an exact-commit JSON observation with the required evidence type, positive execution count, no failures and explicit no-skip evidence. Exit zero alone cannot pass this contract. Raw command exits remain intact; validated observations and errors are retained per check in the feature map and environment record. Existing checks without this contract retain their exit-status semantics.
+
+When a failed candidate is requeued, the next attempt snapshots a repair record in the same transaction as allocation. It preserves the candidate as the retry worktree base and carries bounded diagnostics from digest-checked logs. The job's original approved base still controls scope and integration ancestry. The worker is instructed to treat log content as diagnostic data under the unchanged acceptance policy.
+
+## Operator terminal
+
+The terminal client reads authenticated overview, event and receipt-log endpoints. It never reads the controller database or calls worker tools. Writes use the existing operator transition rules; the client requires a fresh connection and an explicit review or action confirmation. A lost HTTP response produces an uncertain-outcome notice and a new authoritative read, without automatic resubmission. Quitting the client leaves the independent service and its jobs running.
+
+Receipt log requests accept only artifacts owned by the requested job. The service opens files beneath its artifact directory without following symlinks, verifies the full digest, and returns a terminal-safe tail capped at 32 KiB. The TUI also removes terminal control characters from worker-derived text. An optional goal-state file is displayed as a local runner snapshot, separately from per-job delivery.
+
 ## Integration and delivery
 
 One controller integration gate serializes verification and shared-branch acceptance. If the current integration head is an ancestor of the candidate, the exact candidate can become the integrated commit. Otherwise Git creates a merge tree and commit; conflicts become blocked rework. In both cases the controller verifies the exact integrated commit in a new verifier environment. A candidate receipt alone cannot accept the merged result.

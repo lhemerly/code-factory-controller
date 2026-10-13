@@ -15,6 +15,20 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Submit approved work and watch jobs, verification and delivery.
+    Tui {
+        #[arg(long, default_value = "http://127.0.0.1:4317")]
+        url: String,
+        /// Optional local goal-runner state file to display alongside job status.
+        #[arg(long)]
+        goal_state: Option<PathBuf>,
+        /// Explore the interface without connecting or submitting work.
+        #[arg(long)]
+        demo: bool,
+        /// Print a terminal preview instead of opening an interactive terminal.
+        #[arg(long)]
+        snapshot: bool,
+    },
     Serve {
         #[arg(long)]
         config: PathBuf,
@@ -39,6 +53,14 @@ enum Command {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Tui {
+            url,
+            goal_state,
+            demo,
+            snapshot,
+        } => {
+            code_factory_controller::tui::run(url, goal_state, demo, snapshot).await?;
+        }
         Command::Serve { config, listen } => {
             if !matches!(listen.ip(),IpAddr::V4(ip)if ip.is_loopback())
                 && !matches!(listen.ip(),IpAddr::V6(ip)if ip.is_loopback())
@@ -98,8 +120,10 @@ async fn main() -> Result<()> {
                 std::env::var("FACTORY_OPERATOR_TOKEN").context("operator token required")?;
             let body = if let Some(input) = input {
                 serde_json::from_slice(&std::fs::read(input)?)?
-            } else {
+            } else if let Some(job) = job {
                 json!({"job_id":job})
+            } else {
+                json!({})
             };
             let result = reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())

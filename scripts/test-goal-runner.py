@@ -1,4 +1,5 @@
-import importlib.util,json,pathlib,tempfile,unittest
+import importlib.util,json,os,pathlib,subprocess,sys,tempfile,unittest
+from unittest import mock
 s=importlib.util.spec_from_file_location('runner',pathlib.Path(__file__).with_name('goal-runner.py'))
 m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 class Tests(unittest.TestCase):
@@ -76,4 +77,140 @@ class Tests(unittest.TestCase):
    path=pathlib.Path(d)/'state.json';m.Runner(manifest,path,lambda op,b:None)
    manifest['required_evidence']=[]
    with self.assertRaises(ValueError):m.Runner(manifest,path,lambda op,b:None)
+class AcceptancePolicyTests(unittest.TestCase):
+    def manifest(self, root):
+        return {'goal_id': 'goal', 'base_commit': 'a' * 40,
+                'repository': str(root / 'repository'),
+                'tasks': [{'job_id': 'one'}],
+                'verification_environment': {'PATH': '/usr/bin:/bin', 'RUSTUP_TOOLCHAIN': 'stable'},
+                'required_evidence': ['cpu_tests'],
+                'completion_checks': [{'id': 'cpu', 'evidence_type': 'cpu_tests', 'argv': ['/usr/bin/true']}]}
+
+    def done(self, runner):
+        runner.state['completed'] = [{'job_id': 'one', 'integrated_commit': 'b' * 40,
+                                      'delivery': {'commit': 'b' * 40}}]
+        runner.persist()
+
+    def api(self, op, body):
+        return {'state': 'done', 'integrated_commit': 'b' * 40, 'delivery': {'commit': 'b' * 40}}
+
+    def test_repository_and_environment_cannot_change_on_resume(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            path = root / 'state.json'
+            manifest = self.manifest(root)
+            original = m.Runner(manifest, path, self.api)
+            snapshot = path.read_text()
+            for field, value in [('repository', str(root / 'other')),
+                                 ('verification_environment', {'PATH': '/different', 'RUSTUP_TOOLCHAIN': 'stable'}),
+                                 ('verification_environment', {'PATH': '/usr/bin:/bin', 'RUSTUP_TOOLCHAIN': 'nightly'}),
+                                 ('verification_environment', {'PATH': '/usr/bin:/bin', 'VK_DRIVER_FILES': '/different/icd.json'})]:
+                with self.subTest(field=field, value=value):
+                    changed = {**manifest, field: value}
+                    with self.assertRaisesRegex(ValueError, 'repository/environment cannot change'):
+                        m.Runner(changed, path, self.api)
+                    self.assertEqual(path.read_text(), snapshot)
+            resumed = m.Runner(manifest, path, self.api)
+            self.assertEqual(resumed.state['acceptance_policy_digest'], original.state['acceptance_policy_digest'])
+
+    def test_default_path_is_frozen_and_appended_checks_update_policy_digest(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            manifest = self.manifest(root)
+            manifest.pop('verification_environment')
+            path = root / 'state.json'
+            with mock.patch.dict(os.environ, {'PATH': '/approved/bin'}):
+                original = m.Runner(manifest, path, self.api)
+                original.state['status'] = 'completed'
+                original.persist()
+                manifest['completion_checks'].append({'id': 'extra', 'evidence_type': 'cpu_tests', 'argv': ['/usr/bin/true']})
+                extended = m.Runner(manifest, path, self.api)
+                self.assertNotEqual(extended.state['acceptance_policy_digest'], original.state['acceptance_policy_digest'])
+                self.assertEqual(extended.state['status'], 'awaiting_acceptance')
+                self.assertEqual(extended.state['unmet_evidence'], ['cpu_tests'])
+            with mock.patch.dict(os.environ, {'PATH': '/different/bin'}):
+                with self.assertRaisesRegex(ValueError, 'repository/environment cannot change'):
+                    m.Runner(manifest, path, self.api)
+
+    def test_legacy_state_is_snapshotted_and_old_acceptance_is_historical(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            path = root / 'state.json'
+            manifest = self.manifest(root)
+            original = m.Runner(manifest, path, self.api)
+            self.done(original)
+            legacy = json.loads(path.read_text())
+            legacy.pop('acceptance_context')
+            legacy.pop('acceptance_policy_digest')
+            legacy['status'] = 'completed'
+            legacy['acceptance'] = {'passed': True, 'status': 'passed', 'commit': 'b' * 40}
+            m.save(path, legacy)
+            resumed = m.Runner(manifest, path, self.api)
+            self.assertEqual(resumed.state['status'], 'awaiting_acceptance')
+            self.assertNotIn('acceptance', resumed.state)
+            self.assertTrue(resumed.state['legacy_acceptance']['passed'])
+            self.assertEqual(resumed.state['acceptance_policy_migration']['kind'], 'legacy_inputs_first_snapshot')
+            self.assertEqual(resumed.state['completed'], legacy['completed'])
+            self.assertEqual(json.loads(path.read_text())['status'], 'awaiting_acceptance')
+            self.assertFalse(resumed.step())
+            self.assertEqual(resumed.state['status'], 'acceptance_failed')
+
+    def test_setup_failure_is_durable_and_retryable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            path = root / 'state.json'
+            manifest = self.manifest(root)
+            runner = m.Runner(manifest, path, self.api)
+            self.done(runner)
+            self.assertFalse(runner.step())
+            saved = json.loads(path.read_text())
+            self.assertEqual(saved['status'], 'acceptance_failed')
+            self.assertEqual(saved['acceptance']['phase'], 'setup')
+            self.assertEqual(saved['acceptance']['commit'], 'b' * 40)
+            self.assertEqual(saved['acceptance']['policy_digest'], saved['acceptance_policy_digest'])
+            self.assertIn('retry_guidance', saved['acceptance'])
+            resumed = m.Runner(manifest, path, self.api)
+            self.assertFalse(resumed.step())
+            self.assertEqual(json.loads(path.read_text())['status'], 'acceptance_failed')
+
+    def test_final_acceptance_uses_snapshotted_path_after_host_environment_changes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            repository = root / 'repository'
+            repository.mkdir()
+            subprocess.run(['git', 'init', '-q', str(repository)], check=True)
+            subprocess.run(['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                            'commit', '--allow-empty', '-qm', 'baseline'], cwd=repository, check=True)
+            commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repository, text=True).strip()
+            manifest = self.manifest(root)
+            manifest.pop('verification_environment')
+            manifest['base_commit'] = commit
+            manifest['completion_checks'][0]['argv'] = [sys.executable, '-c',
+                "import os,json; assert os.environ['PATH']=='/usr/bin:/bin'; print(json.dumps({'passed':True,'skipped':False,'commit':os.environ['FACTORY_VERIFICATION_COMMIT'],'evidence_type':'cpu_tests'}))"]
+            done = {'state': 'done', 'integrated_commit': commit, 'delivery': {'commit': commit}}
+            path = root / 'state.json'
+            with mock.patch.dict(os.environ, {'PATH': '/usr/bin:/bin'}):
+                runner = m.Runner(manifest, path, lambda op, body: done)
+                runner.state['completed'] = [{'job_id': 'one', 'integrated_commit': commit, 'delivery': done['delivery']}]
+                with mock.patch.dict(os.environ, {'PATH': '/changed-after-start'}):
+                    self.assertFalse(runner.step())
+            saved = json.loads(path.read_text())
+            self.assertEqual(saved['status'], 'completed')
+            self.assertTrue(saved['acceptance']['passed'])
+            self.assertEqual(saved['acceptance']['commit'], commit)
+
+    def test_unexpected_acceptance_loader_error_cannot_leave_running_state(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            path = root / 'state.json'
+            runner = m.Runner(self.manifest(root), path, self.api)
+            self.done(runner)
+            with mock.patch.object(m.importlib.util, 'spec_from_file_location', side_effect=RuntimeError('bad\x1b' * 1000)):
+                self.assertFalse(runner.step())
+            saved = json.loads(path.read_text())
+            self.assertEqual(saved['status'], 'acceptance_failed')
+            self.assertEqual(saved['acceptance']['phase'], 'acceptance_runner')
+            self.assertLessEqual(len(saved['acceptance']['reason']), 1000)
+            self.assertNotIn('\x1b', saved['acceptance']['reason'])
+
 if __name__=='__main__':unittest.main()

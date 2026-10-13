@@ -1,6 +1,7 @@
 """Host-approved final acceptance in a fresh checkout of the delivered commit."""
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -11,10 +12,16 @@ import uuid
 
 
 def validate_evidence(evidence, check, commit):
-    if (evidence.get('passed') is not True or evidence.get('skipped', False)
+    if not isinstance(evidence, dict):
+        raise ValueError('acceptance evidence must be a JSON object')
+    if (evidence.get('passed') is not True or evidence.get('skipped') is not False
             or evidence.get('commit') != commit
             or evidence.get('evidence_type') != check['evidence_type']):
         raise ValueError('acceptance must pass without skips for the exact commit and evidence type')
+    for key, positive in [('executed', True), ('failed', False), ('skipped_count', False)]:
+        if key in evidence and (type(evidence[key]) is not int
+                or (evidence[key] <= 0 if positive else evidence[key] != 0)):
+            raise ValueError('acceptance observations must execute tests without failures or skips')
     if check['evidence_type'] == 'vulkan_execution':
         device = evidence.get('device')
         if (type(evidence.get('gpu_dispatches')) is not int or evidence['gpu_dispatches'] <= 0
@@ -26,6 +33,22 @@ def validate_evidence(evidence, check, commit):
 
 
 def run_acceptance(manifest, state_path, commit):
+    receipts = []
+    setup = []
+    try:
+        return _run_acceptance(manifest, state_path, commit, receipts, setup)
+    except Exception as error:
+        # Setup and process-launch failures are acceptance failures too. The
+        # runner persists this result instead of leaving acceptance_running.
+        phase = getattr(error, 'acceptance_phase', 'policy')
+        reason = ''.join(c if c.isprintable() else ' ' for c in str(error))[:1000]
+        return {'passed': False, 'status': 'acceptance_failed', 'commit': commit,
+                'phase': phase, 'reason': reason, 'error_type': type(error).__name__,
+                'receipts': receipts, 'setup': setup,
+                'retry_guidance': 'Restore the approved repository and verifier prerequisites, inspect retained logs, and resume the same goal state.'}
+
+
+def _run_acceptance(manifest, state_path, commit, receipts, setup):
     checks = manifest.get('completion_checks', [])
     required = set(manifest.get('required_evidence', []))
     if not checks or not required or not required.issubset({c['evidence_type'] for c in checks}):
@@ -38,41 +61,69 @@ def run_acceptance(manifest, state_path, commit):
         raise ValueError('completion check IDs must be unique')
     allowed = {'PATH', 'RUSTUP_HOME', 'CARGO_HOME', 'RUSTUP_TOOLCHAIN', 'VK_ICD_FILENAMES', 'VK_DRIVER_FILES', 'XDG_RUNTIME_DIR'}
     extra = manifest.get('verification_environment', {})
-    if not set(extra).issubset(allowed):
+    if not isinstance(extra, dict) or not set(extra).issubset(allowed):
         raise ValueError('unsupported verification environment key')
+    if any(not isinstance(value, str) or '\x00' in value for value in extra.values()):
+        raise ValueError('verification environment values must be strings without null bytes')
     env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'CI': 'true',
            'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null', **extra,
            'FACTORY_VERIFICATION_COMMIT': commit}
-    output = Path(str(state_path) + '.acceptance') / uuid.uuid4().hex
-    output.mkdir(parents=True)
-    checkout = output / 'checkout'
-    subprocess.run(['git', '-c', 'core.hooksPath=/dev/null', 'clone', '--quiet', '--no-hardlinks', '--no-checkout', str(repository), str(checkout)], env=env, check=True, timeout=60)
-    subprocess.run(['git', '-c', 'core.hooksPath=/dev/null', 'checkout', '--quiet', '--detach', commit], cwd=checkout, env=env, check=True, timeout=60)
-    receipts = []
+    try:
+        output = Path(str(state_path) + '.acceptance') / uuid.uuid4().hex
+        output.mkdir(parents=True)
+        checkout = output / 'checkout'
+        for stage, argv, cwd in [
+            ('clone', ['git', '-c', 'core.hooksPath=/dev/null', 'clone', '--quiet', '--no-hardlinks', '--no-checkout', str(repository), str(checkout)], None),
+            ('checkout', ['git', '-c', 'core.hooksPath=/dev/null', 'checkout', '--quiet', '--detach', commit], checkout),
+        ]:
+            stdout, stderr = output / f'{stage}.stdout', output / f'{stage}.stderr'
+            receipt = {'stage': stage, 'stdout': str(stdout), 'stderr': str(stderr), 'exit_status': None}
+            setup.append(receipt)
+            with stdout.open('wb') as out, stderr.open('wb') as err:
+                result = subprocess.run(argv, cwd=cwd, env=env, stdout=out, stderr=err, timeout=60)
+            receipt['exit_status'] = result.returncode
+            if result.returncode:
+                raise ValueError(f'acceptance {stage} failed; inspect retained setup logs')
+    except Exception as error:
+        error.acceptance_phase = 'setup'
+        raise
     for index, check in enumerate(checks):
         argv, timeout = check['argv'], check.get('timeout_seconds', 300)
-        if not argv or not all(isinstance(a, str) and a for a in argv) or not 1 <= timeout <= 3600:
+        if (not isinstance(argv, list) or not argv or not all(isinstance(a, str) and a for a in argv)
+                or type(timeout) not in (int, float) or not math.isfinite(timeout) or not 1 <= timeout <= 3600):
             raise ValueError('invalid completion command/timeout')
         stdout, stderr = output / f'{index}.stdout', output / f'{index}.stderr'
-        with stdout.open('wb') as out, stderr.open('wb') as err:
-            process = subprocess.Popen(argv, cwd=checkout, env=env, stdout=out, stderr=err, start_new_session=True)
-            deadline = time.monotonic() + timeout
-            failure = None
-            while process.poll() is None:
-                if time.monotonic() > deadline or stdout.stat().st_size + stderr.stat().st_size > 1024*1024:
-                    failure = 'timeout or log limit'
-                    os.killpg(process.pid, signal.SIGKILL)
-                    break
-                time.sleep(.05)
-            exit_status = process.wait()
-        receipt = {'check_id': check['id'], 'commit': commit, 'exit_status': exit_status,
-                   'stdout': str(stdout), 'stderr': str(stderr),
-                   'stdout_sha256': hashlib.sha256(stdout.read_bytes()).hexdigest()}
+        receipt = {'check_id': check['id'], 'commit': commit, 'exit_status': None,
+                   'stdout': str(stdout), 'stderr': str(stderr)}
         receipts.append(receipt)
         try:
+            with stdout.open('wb') as out, stderr.open('wb') as err:
+                process = subprocess.Popen(argv, cwd=checkout, env=env, stdout=out, stderr=err, start_new_session=True)
+                try:
+                    deadline = time.monotonic() + timeout
+                    failure = None
+                    while process.poll() is None:
+                        if time.monotonic() > deadline or stdout.stat().st_size + stderr.stat().st_size > 1024*1024:
+                            failure = 'timeout or log limit'
+                            break
+                        time.sleep(.05)
+                finally:
+                    if process.poll() is None:
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    receipt['exit_status'] = process.wait()
+            receipt['stdout_sha256'] = hashlib.sha256(stdout.read_bytes()).hexdigest()
+        except Exception as error:
+            error.acceptance_phase = 'check_launch'
+            raise
+        try:
+            exit_status = receipt['exit_status']
             if exit_status or failure:
                 raise ValueError(failure or 'command failed')
             receipt['evidence'] = validate_evidence(json.loads(stdout.read_text()), check, commit)
-        except (ValueError, KeyError) as error:
-            return {'passed': False, 'status': 'acceptance_failed', 'reason': str(error), 'commit': commit, 'receipts': receipts}
-    return {'passed': True, 'status': 'passed', 'commit': commit, 'receipts': receipts}
+        except Exception as error:
+            error.acceptance_phase = 'check_evidence'
+            raise
+    return {'passed': True, 'status': 'passed', 'commit': commit, 'receipts': receipts, 'setup': setup}

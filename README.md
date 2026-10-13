@@ -15,6 +15,7 @@ The first release targets **Linux**, **SQLite**, **OpenCode 1.19.0**, and **prot
 - Serialized integration with compare-and-swap Git ref updates and fresh integrated-commit verification
 - Persisted delivery intent, checked archive creation, restart reconciliation and artifact auditing
 - Approved free-model selection, helper-model checks, durable provider cooldowns and zero paid fallback
+- Interactive terminal workspace for creating jobs, reviewing scope, watching activity and inspecting verification logs
 
 This is a local service for trusted workloads. Git worktrees and environment filtering do not isolate arbitrary processes. Deploy untrusted worker or verifier code in an appropriate container or VM with filesystem, network, credential and resource boundaries. The service does not install or configure that environment for you.
 
@@ -26,7 +27,7 @@ On Linux with Python 3, Git and Rust available, clone this repository and run:
 python3 scripts/code-factory.py install --auto-update
 ```
 
-This installs `~/.local/bin/code-factory` and `code-factory-controller`. Ensure `~/.local/bin` is on PATH. `code-factory run` launches the durable backlog runner; `serve`, `operator` and `schemas` forward to the Rust controller.
+This installs `~/.local/bin/code-factory` and `code-factory-controller`. Ensure `~/.local/bin` is on PATH. `code-factory run` launches the durable backlog runner; `serve`, `operator`, `tui` and `schemas` forward to the Rust controller.
 
 The user systemd timer checks the latest stable GitHub release daily. Updates build the tagged source with locked dependencies, run runner regression checks, and switch the active version only after success. Failed updates retain the installed version. Existing running controllers continue using their current executable; an update never restarts an active job or changes its configuration/database. Rust build dependencies and network access are required for updates.
 
@@ -80,6 +81,36 @@ The token is read from the host environment, never a model-visible tool argument
 
 ## Admit and run approved work
 
+With the controller running, open its terminal interface in another terminal using the same `FACTORY_OPERATOR_TOKEN`:
+
+```sh
+code-factory tui
+# Optional: also display the durable backlog runner's local goal state.
+code-factory tui --goal-state /absolute/path/goal-state.json
+# Explore the interface without a controller or credentials.
+code-factory tui --demo
+```
+
+Press **n** to enter a job name, task, required behavior, expected result, allowed/protected paths, base commit and policy version. Use Tab to move between fields; choose a registered verification profile with Left/Right. The base defaults to the repository's current HEAD: change it to the intended integration commit when building on previous deliveries. The form maps its behavior to every check in that profile. Use **i** to import a complete job JSON file when you need multiple criteria or different check mappings.
+
+Press **Ctrl+S** to review the full job and its trusted check commands, then **y** to admit it to the queue. Select it and press **r**, then **y**, to start execution. Admission and execution are separate actions. The TUI uses adapter mode; plugin-assisted dispatch remains available through `operator run`.
+
+| Key | Action |
+| --- | --- |
+| ↑ / ↓ or k / j | Select a job |
+| Tab or 1 / 2 / 3 | Overview, evidence, activity |
+| PgUp / PgDn | Scroll details, review or logs |
+| n / i | Create a job / import a job file |
+| r / p | Run / pause or resume |
+| a / c / x | Abort worker / cancel job / requeue |
+| [ / ] then l | Select and open a verification log |
+| ? / Esc | Help / close or go back |
+| q or Ctrl+C | Close the view; controller jobs continue |
+
+State refreshes every two seconds. A stale or failed connection disables writes; pending requests cannot be submitted twice. If an action's response is interrupted, inspect the refreshed durable state before retrying. Activity displays controller transitions, while verification logs are loaded only from receipt-owned artifacts after digest validation. The view never interprets model messages as acceptance. A delivered job and the optional broad-goal snapshot have separate status displays; the snapshot is a local runner record, not a fresh execution of its acceptance checks.
+
+The interface works best at 100×30 or larger and supports terminals down to 58×17. Draft fields support typing, backspace, Ctrl+U to clear a field, and pasted text; Enter inserts a line in the task brief. `code-factory tui --demo --snapshot` prints a fixed-size text preview. The TUI does not start services or create verification commands; configure the trusted profile and services first as described above.
+
 Copy [the job example](examples/job.json), set the full base commit, describe the bounded behavior, declare allowed and protected paths, and map every acceptance criterion to registered check IDs. The chosen profile is snapshotted into the approved job. A coding worker cannot replace its commands or weaken its acceptance criteria.
 
 ```sh
@@ -91,6 +122,8 @@ Copy [the job example](examples/job.json), set the full base commit, describe th
 `run` starts or reconciles the existing adapter attempt. The controller creates its worktree and session, sends the approved brief, inspects the session and Git HEAD, independently verifies a candidate, integrates it, verifies the integrated result and checks the delivered archive. The session's text is feedback, not acceptance evidence.
 
 The operator CLI also supports `list`, `prepare`, `bind`, `heartbeat`, `advance`, `pause`, `resume`, `cancel`, `abort` and `requeue`. Supply operation-specific JSON with `--input`; use `--url` for another loopback port. `abort` resolves and fences the previous worker. `requeue` refuses unresolved sessions, integration plans and exhausted attempt budgets. Paused or cancelled jobs stop controller dispatch and handoffs; the operator chooses when to abort an active coding session.
+
+The read operations `overview`, `events` and `log` supply the terminal interface. They require the operator capability. `overview` re-audits completed deliveries; `events` accepts `after_seq`, optional `job_id`, and a limit up to 200; `log` accepts `job_id` and `artifact_reference` and returns a digest-checked tail of at most 32 KiB.
 
 Unknown session-creation or prompt-dispatch outcomes are fenced as blocked rather than blindly repeated. Inspect the dedicated OpenCode session, then resolve or abort it before requeueing. Provider errors retain their class and cooldown. Free-only work waits when no eligible model exists; no paid model is substituted. [Recovery and authority details](docs/architecture.md) explain these boundaries.
 
@@ -108,6 +141,28 @@ Worker capabilities stay bound to one job and session. Use a fresh host capabili
 
 Plugin candidate submission returns `accepted_for_integration`; only the controller can transition to `done` after integrated verification and actual artifact delivery.
 
+## Require measured test evidence
+
+Legacy profile checks use their exit status. For checks that must prove tests actually ran, add an optional result contract to the host-approved check:
+
+```json
+{
+  "id": "runtime",
+  "argv": ["python3", "/opt/code-factory/checks/runtime.py"],
+  "result_contract": { "evidence_type": "runtime_tests" }
+}
+```
+
+The verifier must execute the real tests and print one JSON object to stdout, with diagnostics on stderr:
+
+```json
+{"commit":"<FACTORY_VERIFICATION_COMMIT>","evidence_type":"runtime_tests","passed":true,"skipped":false,"executed":12,"failed":0}
+```
+
+`FACTORY_VERIFICATION_COMMIT` is supplied by the controller. The reported commit must match it exactly; `executed` must be a positive integer and `failed` must equal zero. Explicit `skipped:false` or integer `skipped_count:0` is required, with no contradictory skip fields. Missing, malformed, oversized, skipped or zero-test results fail verification even when the command exits zero. The controller preserves the actual exit status, observations and evidence error in its receipt, reruns the same contract against the integrated commit, and includes failures in rework feedback.
+
+The host-owned verifier is responsible for measuring the required behavior. Protect repository-owned verifier paths from worker edits, or keep the verifier outside the worker repository. Application-specific hardware/device evidence belongs in that verifier. Adding a result contract changes the approved configuration: use a new reviewed configuration/data directory rather than modifying an existing database's policy. The TUI identifies checks with a contract and labels existing checks **Exit status only**.
+
 ## Sustained implementation backlogs
 
 The Linux host runner in `scripts/goal-runner.py` executes an approved sequence of jobs in adapter mode. Each job starts from the previous independently verified integration commit. The runner persists admission intent before contacting the controller, reconciles existing job identities on restart, retains exact integrated receipts and deliveries, and bounds verification rework. It respects controller provider cooldowns and stops on paused, blocked or ambiguous effects.
@@ -120,6 +175,8 @@ python3 scripts/goal-runner.py --manifest /absolute/path/goal.json \
 Keep the operator capability in the host environment and both services running. Interrupting or exhausting the host runner's time budget retains the active job; invoke it again with the same manifest/state to resume. One runner owns each state file through a Linux file lock. Jobs already listed in the manifest are immutable; append new approved tasks to extend a backlog.
 
 A manifest contains `goal_id`, the initial `base_commit`, a `tasks` array of approved job inputs (without `base_commit`, which is assigned when each task starts), optional `max_reworks` (default 1), and `remaining_work`. Every task still requires trusted registered verification checks and approved path boundaries. This runner consumes a host-approved backlog; it does not automatically invent or approve arbitrary verification commands.
+
+Verification rework preserves the failed candidate in the next attempt's worktree and supplies bounded, digest-checked failure diagnostics. The original approved base and acceptance policy remain fixed. This lets a repair continue existing implementation progress across controller restarts.
 
 The state distinguishes completed jobs from the broad goal. Exhausting tasks with unresolved `remaining_work` yields `awaiting_plan` (exit 2), not completion. `needs_attention` also exits 2; run-budget exhaustion exits 75. `completed`/exit 0 additionally requires a mandatory final acceptance suite to pass in a fresh checkout of the exact final integrated commit. Empty or missing acceptance suites yield `awaiting_acceptance`; nonzero exits, skipped checks, missing evidence and failed execution yield `acceptance_failed`. Both exit 2. That result is bounded by the approved checks; it does not prove unspecified requirements.
 
@@ -135,6 +192,8 @@ For a goal requiring Vulkan execution, include `vulkan_execution` in `required_e
 
 Completion requirements cannot be removed on resume, and previously approved completion commands cannot be changed or removed; additional checks may be appended. Existing old manifests with no final suite no longer qualify for completion. An optional `verification_environment` allows only PATH, Rust/Cargo paths/toolchain, Vulkan driver selection and XDG runtime path; operator/worker capabilities are not inherited.
 
+The runner records the canonical repository and effective verifier environment, including PATH, with an acceptance-policy digest. Resume rejects changes to those inputs. Older states record their first policy snapshot and require fresh acceptance before retaining a previous completion claim. Setup, missing-command, timeout and malformed-result errors persist as `acceptance_failed` with retained logs and retry guidance. Final evidence must explicitly report `skipped:false`; any provided test counts must also report positive execution and zero failures/skips.
+
 A milestone's `done` means its declared independent checks and archive delivery passed. It does not mean the broad backend goal is finished. Backend acceptance must include the required CPU compatibility and Vulkan execution checks in its final contract.
 
 ## Validation and scope
@@ -143,4 +202,4 @@ The test suite covers durable replay, restart recovery, independent verification
 
 Live Big Pickle runs completed a bounded hardening change in the plugin repository both without and with plugin assistance. Both passed trusted candidate and integrated checks, delivered a checked archive, and survived a controller-process restart. The source repository was used in a disposable clone; the delivered change is a local artifact, not a claim that its upstream branch was changed. See [validation evidence and limits](docs/validation.md).
 
-Multiple-project scheduling, PR/deployment delivery adapters, paid models, distributed workers and a dashboard remain outside this first release. [MIT license](LICENSE); [dependency and contract notices](THIRD_PARTY_NOTICES.md).
+Multiple-project scheduling, PR/deployment delivery adapters, paid models, distributed workers and a web dashboard remain outside this release. [MIT license](LICENSE); [dependency and contract notices](THIRD_PARTY_NOTICES.md).

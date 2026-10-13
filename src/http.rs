@@ -1,4 +1,5 @@
-use crate::{engine::Engine, model::*};
+use crate::{engine::Engine, execution, model::*};
+use anyhow::{Context, Result, bail};
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, Query, State},
@@ -6,7 +7,136 @@ use axum::{
     routing::{get, post},
 };
 use serde_json::{Value, json};
-use std::{collections::HashMap, sync::Arc};
+use sha2::{Digest, Sha256};
+use std::{collections::HashMap, fs::File, io::Read, path::Path as FilePath, sync::Arc};
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmptyQuery {}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EventQuery {
+    job_id: Option<String>,
+    #[serde(default)]
+    after_seq: u64,
+    #[serde(default = "default_event_limit")]
+    limit: u16,
+    #[serde(default)]
+    tail: bool,
+}
+
+fn default_event_limit() -> u16 {
+    100
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LogQuery {
+    job_id: String,
+    artifact_reference: String,
+}
+
+// Open each directory relative to the preceding descriptor. A symlink swapped
+// between validation and opening cannot redirect reads outside controller data.
+#[cfg(unix)]
+fn open_log(data_dir: &FilePath, name: &str) -> Result<File> {
+    use std::ffi::CString;
+    use std::os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::fs::OpenOptionsExt,
+    };
+    let data = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(data_dir)?;
+    let open_at = |parent: &File, name: &str, extra: i32| -> Result<File> {
+        let name = CString::new(name)?;
+        let fd = unsafe {
+            libc::openat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK | extra,
+            )
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(unsafe { File::from_raw_fd(fd) })
+    };
+    let artifacts = open_at(&data, "artifacts", libc::O_DIRECTORY)?;
+    let file = open_at(&artifacts, name, 0)?;
+    if !file.metadata()?.is_file() {
+        bail!("artifact is not a regular log file");
+    }
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+fn open_log(_: &FilePath, _: &str) -> Result<File> {
+    bail!("log access requires descriptor-relative file opening");
+}
+
+fn log_artifact(engine: &Engine, query: LogQuery) -> Result<Value> {
+    const LIMIT: usize = 32 * 1024;
+    if !valid_id(&query.job_id) {
+        bail!("invalid job ID");
+    }
+    let job = engine.get(&query.job_id)?;
+    let artifact = job
+        .receipt
+        .iter()
+        .chain(job.candidate_receipt.iter())
+        .flat_map(|receipt| &receipt.artifacts)
+        .find(|artifact| artifact.reference == query.artifact_reference)
+        .context("artifact is not referenced by this job's verification receipts")?;
+    let name = artifact
+        .reference
+        .strip_prefix("artifact:")
+        .context("invalid log artifact")?;
+    if !valid_id(name) || !name.ends_with(".log") {
+        bail!("invalid log artifact");
+    }
+    let mut file = open_log(&engine.config.data_dir, name).context("cannot open log artifact")?;
+    let mut hasher = Sha256::new();
+    let mut tail = std::collections::VecDeque::with_capacity(LIMIT);
+    let mut buffer = [0_u8; 8192];
+    let mut total = 0_u64;
+    loop {
+        let size = file.read(&mut buffer)?;
+        if size == 0 {
+            break;
+        }
+        hasher.update(&buffer[..size]);
+        total += size as u64;
+        if tail.len() + size > LIMIT {
+            tail.drain(..tail.len() + size - LIMIT);
+        }
+        tail.extend(&buffer[..size]);
+    }
+    let sha256 = format!("{:x}", hasher.finalize());
+    if sha256 != artifact.sha256 {
+        bail!("log artifact digest mismatch");
+    }
+    let bytes: Vec<u8> = tail.into_iter().collect();
+    let mut text: String = String::from_utf8_lossy(&bytes)
+        .chars()
+        .filter(|ch| {
+            (!ch.is_control() || matches!(ch, '\n' | '\t'))
+                && !matches!(ch, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        })
+        .collect();
+    let mut truncated = total > LIMIT as u64;
+    if text.len() > LIMIT {
+        let mut start = text.len() - LIMIT;
+        while !text.is_char_boundary(start) {
+            start += 1;
+        }
+        text.drain(..start);
+        truncated = true;
+    }
+    Ok(json!({"text":text,"truncated":truncated,"sha256":sha256}))
+}
 #[derive(Clone)]
 pub struct HttpState {
     pub engine: Arc<Engine>,
@@ -120,6 +250,40 @@ async fn operator(
                 json!({"renewed":true})
             }
             "list" => serde_json::to_value(s.engine.store.all()?)?,
+            "overview" => {
+                let _: EmptyQuery = serde_json::from_value(body.clone())?;
+                let mut jobs = Vec::new();
+                for job in s.engine.store.all()? {
+                    jobs.push(s.engine.reconcile_delivery(&job.input.job_id)?);
+                }
+                let config = &s.engine.config;
+                let base_commit = execution::git(&config.repository, &["rev-parse", "--verify", "HEAD^{commit}"]).await?;
+                if !valid_commit(&base_commit) {
+                    bail!("repository HEAD did not resolve to a full commit");
+                }
+                json!({
+                    "project_id":config.project_id,
+                    "repository":config.repository.display().to_string(),
+                    "base_commit":base_commit,
+                    "integration_ref":config.integration_ref,
+                    "max_workers":config.max_workers,
+                    "max_attempts":config.max_attempts,
+                    "profiles":config.profiles,
+                    "policy":{"models":config.policy.models,"free_only":config.policy.free_only,"spend_ceiling":config.policy.spend_ceiling},
+                    "jobs":jobs,
+                })
+            }
+            "events" => {
+                let query: EventQuery = serde_json::from_value(body.clone())?;
+                let events = s.engine.store.events(query.job_id.as_deref(), query.after_seq, query.limit, query.tail)?;
+                let next_seq = events.last().map_or(query.after_seq, |event| event.seq);
+                json!({"events":events,"next_seq":next_seq})
+            }
+            "log" => {
+                let query: LogQuery = serde_json::from_value(body.clone())?;
+                let engine = s.engine.clone();
+                tokio::task::spawn_blocking(move || log_artifact(&engine, query)).await??
+            }
             "pause" | "resume" | "cancel" | "requeue" => {
                 serde_json::to_value(s.engine.action(id, &op)?)?
             }

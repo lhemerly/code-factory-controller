@@ -104,7 +104,7 @@ def enable_updates():
 def main():
     args = sys.argv[1:]
     if not args or args[0] in ('-h','--help'):
-        print('code-factory install [--tag vX.Y.Z] [--auto-update]\ncode-factory update\ncode-factory run --manifest GOAL --state STATE [runner options]\ncode-factory serve/operator/schemas [controller options]\ncode-factory --version')
+        print('code-factory install [--tag vX.Y.Z] [--auto-update]\ncode-factory update\ncode-factory run --manifest GOAL --state STATE [runner options]\ncode-factory serve/operator/tui/schemas [controller options]\ncode-factory --version')
         return 0
     if args[0] in ('install','update'):
         tag = args[args.index('--tag')+1] if '--tag' in args else None

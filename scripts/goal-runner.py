@@ -47,7 +47,8 @@ class Runner:
         ids = [t['job_id'] for t in manifest['tasks']]
         if len(set(ids)) != len(ids):
             raise ValueError('duplicate job IDs')
-        self.state = json.loads(self.path.read_text()) if self.path.exists() else {
+        resuming = self.path.exists()
+        self.state = json.loads(self.path.read_text()) if resuming else {
             'goal_id': manifest['goal_id'], 'completed': [], 'current': None,
             'status': 'running', 'task_hashes': [], 'initial_base': manifest['base_commit']}
         hashes = [digest(t) for t in manifest['tasks']]
@@ -62,6 +63,42 @@ class Runner:
         old_checks = self.state.get('completion_check_hashes', [])
         if completion_hashes[:len(old_checks)] != old_checks:
             raise ValueError('approved completion checks cannot be removed or changed')
+        environment = manifest.get('verification_environment', {})
+        if not isinstance(environment, dict):
+            raise ValueError('verification_environment must be an object')
+        repository = manifest.get('repository')
+        if repository is not None and (not isinstance(repository, str) or not Path(repository).is_absolute()):
+            raise ValueError('acceptance repository must be an absolute path')
+        context = {
+            'repository': str(Path(repository).resolve()) if repository is not None else None,
+            'verification_environment': {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), **environment},
+        }
+        previous_context = self.state.get('acceptance_context')
+        if previous_context is not None and previous_context != context:
+            raise ValueError('approved acceptance repository/environment cannot change; explicit policy migration or a new goal state is required')
+        if resuming and previous_context is None:
+            # Older state never recorded these inputs. Preserve its evidence as
+            # historical, and require fresh acceptance under the new snapshot.
+            self.state['acceptance_policy_migration'] = {
+                'kind': 'legacy_inputs_first_snapshot',
+                'previous_status': self.state['status'],
+                'at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            }
+            if 'acceptance' in self.state:
+                self.state['legacy_acceptance'] = self.state.pop('acceptance')
+            if self.state['status'] in ('completed', 'acceptance_running'):
+                self.state['status'] = 'awaiting_acceptance'
+                self.state['unmet_evidence'] = sorted(required)
+        self.state['acceptance_context'] = context
+        policy_digest = digest({
+            **context, 'completion_check_hashes': completion_hashes,
+            'required_evidence': sorted(required),
+        })
+        if (self.state.get('acceptance_policy_digest') != policy_digest
+                and self.state['status'] == 'completed'):
+            self.state['status'] = 'awaiting_acceptance'
+            self.state['unmet_evidence'] = sorted(required)
+        self.state['acceptance_policy_digest'] = policy_digest
         self.state['required_evidence'] = sorted(required)
         self.state['completion_check_hashes'] = completion_hashes
         self.state['task_hashes'] = hashes
@@ -92,13 +129,28 @@ class Runner:
                 self.state['status'] = 'awaiting_plan'
             else:
                 # Backlog exhaustion is never sufficient for goal acceptance.
-                spec = importlib.util.spec_from_file_location('goal_acceptance', Path(__file__).with_name('goal-acceptance.py'))
-                module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
                 commit = self.state['completed'][-1]['integrated_commit']
                 self.state['status'] = 'acceptance_running'
                 self.persist()
-                acceptance = module.run_acceptance(self.manifest, self.path, commit)
+                try:
+                    spec = importlib.util.spec_from_file_location('goal_acceptance', Path(__file__).with_name('goal-acceptance.py'))
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
+                    acceptance_manifest = {**self.manifest, **self.state['acceptance_context']}
+                    acceptance = module.run_acceptance(acceptance_manifest, self.path, commit)
+                    if (not isinstance(acceptance, dict) or type(acceptance.get('passed')) is not bool
+                            or acceptance.get('status') not in ('passed', 'acceptance_failed', 'awaiting_acceptance')
+                            or (acceptance['passed'] != (acceptance['status'] == 'passed'))):
+                        raise ValueError('acceptance returned an invalid result')
+                except Exception as error:
+                    reason = ''.join(c if c.isprintable() else ' ' for c in str(error))
+                    acceptance = {
+                        'passed': False, 'status': 'acceptance_failed', 'commit': commit,
+                        'phase': 'acceptance_runner', 'reason': reason[:1000],
+                        'error_type': type(error).__name__, 'receipts': [],
+                        'retry_guidance': 'Restore the approved verifier prerequisites, inspect retained logs, and resume the same goal state.',
+                    }
+                acceptance['policy_digest'] = self.state['acceptance_policy_digest']
                 self.state['acceptance'] = acceptance
                 self.state['status'] = 'completed' if acceptance['passed'] else acceptance['status']
                 if acceptance['passed']:

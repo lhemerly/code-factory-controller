@@ -27,7 +27,7 @@ jobs:
       - name: Load independent plugin consumer
         run: |
           git clone https://github.com/lhemerly/opencode-factory-plugin.git /tmp/factory-plugin
-          git -C /tmp/factory-plugin checkout b169b30f4be8109e8fb054334ca8a78639d29225
+          git -C /tmp/factory-plugin checkout 7cfea868c961b90bfeca5399b1246f157e70ee97
           npm --prefix /tmp/factory-plugin ci
           npm --prefix /tmp/factory-plugin run build
       - run: node scripts/plugin-contract.mjs

@@ -3,7 +3,7 @@ use anyhow::{Context, Result, bail};
 use chrono::{Duration, Utc};
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
-use std::{fs::File, path::Path, sync::Arc};
+use std::{fs::File, io::Read, path::Path, sync::Arc};
 
 pub struct Engine {
     pub config: Config,
@@ -152,6 +152,18 @@ impl Engine {
                 bail!("attempt limit reached");
             }
             let attempt_id = new_id();
+            let rework_key = format!("rework-job:{}", job.input.job_id);
+            let rework = if let Some(receipt) = job.candidate_receipt.as_ref().filter(|r| {
+                r.outcome == "failed" && job.candidate.as_deref() == Some(&r.candidate_commit)
+            }) {
+                Some(serde_json::to_string(&self.rework_summary(&job, receipt))?)
+            } else {
+                tx.query_row("SELECT value FROM metadata WHERE key=?1", [&rework_key], |r| r.get::<_, String>(0)).optional()?
+            };
+            if let Some(rework) = rework {
+                tx.execute("INSERT INTO metadata(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![rework_key, rework])?;
+                tx.execute("INSERT INTO metadata(key,value) VALUES(?1,?2)", params![format!("rework-attempt:{attempt_id}"), rework])?;
+            }
             job.attempt = Some(Attempt {
                 attempt_id: attempt_id.clone(),
                 lease_id: new_id(),
@@ -181,8 +193,64 @@ impl Engine {
         self.save_if_current(&mut job, "worker worktree ready")?;
         Ok(job)
     }
+    fn rework_summary(&self, job: &Job, receipt: &Receipt) -> Value {
+        let check_result = |index: usize| {
+            let id = &job.profile.checks.get(index)?.id;
+            receipt.environment["checks"]
+                .as_array()?
+                .iter()
+                .find(|result| result["check_id"] == *id)
+        };
+        let failed = receipt
+            .commands
+            .iter()
+            .enumerate()
+            .filter(|(index, c)| {
+                c.exit_status != 0
+                    || check_result(*index).is_some_and(|result| result["verified"] == false)
+            })
+            .collect::<Vec<_>>();
+        let checks = failed.iter().take(8).map(|(index, command)| {
+            let artifact = receipt.artifacts.get(*index);
+            let excerpt = artifact.and_then(|artifact| {
+                let filename = artifact.reference.strip_prefix("artifact:")?;
+                if !relative(filename) || Path::new(filename).components().count() != 1 { return None; }
+                let mut bytes = vec![];
+                File::open(self.config.data_dir.join("artifacts").join(filename)).ok()?.take(1_048_577).read_to_end(&mut bytes).ok()?;
+                if bytes.len() > 1_048_576 || digest(&bytes) != artifact.sha256 { return None; }
+                Some(String::from_utf8_lossy(&bytes).chars().take(1_000).collect::<String>())
+            });
+            json!({"check_id":job.profile.checks.get(*index).map(|c| &c.id),"command":command.command,"exit_status":command.exit_status,"artifact":artifact,"log_excerpt":excerpt,"evidence_error":check_result(*index).and_then(|r| r.get("evidence_error")),"observations":check_result(*index).and_then(|r| r.get("observations"))})
+        }).collect::<Vec<_>>();
+        json!({"candidate_commit":receipt.candidate_commit,"verification_id":receipt.verification_id,"profile_id":receipt.verification_profile_id,"failed_check_count":failed.len(),"failed_checks":checks})
+    }
+    pub(crate) fn rework_context(&self, job: &Job) -> Result<Option<Value>> {
+        let Some(attempt) = &job.attempt else {
+            return Ok(None);
+        };
+        self.store.transaction(|tx| {
+            let value = tx
+                .query_row(
+                    "SELECT value FROM metadata WHERE key=?1",
+                    [format!("rework-attempt:{}", attempt.attempt_id)],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?;
+            value
+                .map(|value| Ok(serde_json::from_str(&value)?))
+                .transpose()
+        })
+    }
     pub async fn prepare_worktree(&self, job: &Job) -> Result<()> {
         let a = job.attempt.as_ref().context("attempt")?;
+        let rework = self.rework_context(job)?;
+        let base = rework
+            .as_ref()
+            .and_then(|r| r["candidate_commit"].as_str())
+            .unwrap_or(&job.input.base_commit);
+        if rework.is_some() {
+            execution::scope(&self.config.repository, job, base).await?;
+        }
         std::fs::create_dir_all(a.worktree.parent().unwrap())?;
         if !a.worktree.exists() {
             execution::git(
@@ -193,7 +261,7 @@ impl Engine {
                     "--quiet",
                     "--detach",
                     a.worktree.to_str().context("worktree path")?,
-                    &job.input.base_commit,
+                    base,
                 ],
             )
             .await?;

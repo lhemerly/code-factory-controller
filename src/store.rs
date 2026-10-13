@@ -1,8 +1,19 @@
 use crate::model::*;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
 use std::{path::Path, sync::Mutex};
+
+#[derive(Debug, serde::Serialize)]
+pub struct Event {
+    pub seq: u64,
+    pub job_id: String,
+    pub revision: u64,
+    pub at: String,
+    pub state: String,
+    pub reason: Option<String>,
+}
+
 pub struct Store(pub Mutex<Connection>);
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
@@ -71,6 +82,55 @@ impl Store {
             data.into_iter()
                 .map(|d| Ok(serde_json::from_str(&d)?))
                 .collect()
+        })
+    }
+    pub fn events(
+        &self,
+        job_id: Option<&str>,
+        after_seq: u64,
+        limit: u16,
+        tail: bool,
+    ) -> Result<Vec<Event>> {
+        if job_id.is_some_and(|id| !valid_id(id))
+            || !(1..=200).contains(&limit)
+            || (tail && after_seq != 0)
+        {
+            bail!("invalid event query");
+        }
+        let after_seq = i64::try_from(after_seq).context("event cursor out of range")?;
+        self.transaction(|tx| {
+            if let Some(id) = job_id {
+                Self::load(tx, id)?;
+            }
+            let sql = if tail {
+                "SELECT seq,job_id,revision,at,state,reason FROM events \
+                 WHERE seq>?1 AND (?2 IS NULL OR job_id=?2) ORDER BY seq DESC LIMIT ?3"
+            } else {
+                "SELECT seq,job_id,revision,at,state,reason FROM events \
+                 WHERE seq>?1 AND (?2 IS NULL OR job_id=?2) ORDER BY seq LIMIT ?3"
+            };
+            let mut statement = tx.prepare(sql)?;
+            let mut events = statement
+                .query_map(params![after_seq, job_id, limit], |row| {
+                    let unsigned = |index| -> rusqlite::Result<u64> {
+                        let value: i64 = row.get(index)?;
+                        u64::try_from(value)
+                            .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(index, value))
+                    };
+                    Ok(Event {
+                        seq: unsigned(0)?,
+                        job_id: row.get(1)?,
+                        revision: unsigned(2)?,
+                        at: row.get(3)?,
+                        state: row.get(4)?,
+                        reason: row.get(5)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            if tail {
+                events.reverse();
+            }
+            Ok(events)
         })
     }
     pub fn request(tx: &Transaction, id: &str) -> Result<Option<(Value, Value)>> {

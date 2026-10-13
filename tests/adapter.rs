@@ -60,10 +60,27 @@ async fn prompt(
     *s.tools.lock().unwrap() = Some(body["tools"].clone());
     if !s.idle_no_commit && !s.provider_error {
         let directory = std::path::Path::new(q.get("directory").unwrap());
-        std::fs::write(directory.join("result.txt"), "adapter-created result\n").unwrap();
-        execution::git(directory, &["add", "result.txt"])
-            .await
+        let text = body["parts"][0]["text"].as_str().unwrap();
+        let repair_fixture = s.data.lock().unwrap()["repair_fixture"] == true;
+        let repaired = text.contains("Controller rework record:")
+            && text.contains("expected a nonempty result")
+            && text.contains("\"exit_status\":7")
+            && directory.join("extra.txt").exists();
+        let content = if repair_fixture && !repaired {
+            ""
+        } else {
+            "adapter-created result\n"
+        };
+        std::fs::write(directory.join("result.txt"), content).unwrap();
+        if repair_fixture && !directory.join("extra.txt").exists() {
+            std::fs::write(
+                directory.join("extra.txt"),
+                "preserve first attempt progress\n",
+            )
             .unwrap();
+        }
+        s.data.lock().unwrap()["prompt"] = body.clone();
+        execution::git(directory, &["add", "."]).await.unwrap();
         execution::git(directory, &["commit", "-m", "adapter candidate"])
             .await
             .unwrap();
@@ -85,9 +102,19 @@ async fn setup(
     provider_error: bool,
     idle_no_commit: bool,
 ) -> (Fixture, Arc<Engine>, Mock, tokio::task::JoinHandle<()>) {
+    setup_case(paid, provider_error, idle_no_commit, false).await
+}
+async fn setup_case(
+    paid: bool,
+    provider_error: bool,
+    idle_no_commit: bool,
+    repair_fixture: bool,
+) -> (Fixture, Arc<Engine>, Mock, tokio::task::JoinHandle<()>) {
     let f = Fixture::new().await;
     let state = Mock {
-        data: Arc::new(Mutex::new(json!({"session":null,"messages":[]}))),
+        data: Arc::new(Mutex::new(
+            json!({"session":null,"messages":[],"repair_fixture":repair_fixture}),
+        )),
         paid,
         provider_error,
         idle_no_commit,
@@ -111,9 +138,92 @@ async fn setup(
     config.data_dir = f.temp.path().join("adapter-controller");
     config.delivery_dir = f.temp.path().join("adapter-delivery");
     config.opencode_url = Some(url);
+    if repair_fixture {
+        config.profiles[0].checks[0].argv = vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "test -s result.txt || { printf 'expected a nonempty result\\n'; printf '%02000d' 0; exit 7; }".into(),
+        ];
+    }
     let engine = Engine::open(config).unwrap();
     engine.admit(f.input("job")).await.unwrap();
     (f, engine, state, handle)
+}
+#[tokio::test]
+async fn verification_rework_resumes_candidate_and_receives_failure_after_restart() {
+    let (f, e, s, h) = setup_case(false, false, false, true).await;
+    e.run("job", "adapter").await.unwrap();
+    e.adapter_tick("job").await.unwrap();
+    let failed = e.advance("job").await.unwrap();
+    assert_eq!(failed.candidate_receipt.as_ref().unwrap().outcome, "failed");
+    let candidate = failed.candidate.clone().unwrap();
+    e.abort_worker("job").await.unwrap();
+    e.action("job", "requeue").unwrap();
+    let next = e.prepare("job", "adapter").await.unwrap();
+    assert_eq!(next.input.base_commit, f.base);
+    assert!(next.candidate.is_none() && next.receipt.is_none());
+    assert_eq!(
+        execution::git(
+            &next.attempt.as_ref().unwrap().worktree,
+            &["rev-parse", "HEAD"]
+        )
+        .await
+        .unwrap(),
+        candidate
+    );
+    assert!(
+        next.attempt
+            .as_ref()
+            .unwrap()
+            .worktree
+            .join("extra.txt")
+            .exists()
+    );
+    let config = e.config.clone();
+    drop(e);
+    let recovered = Engine::open(config).unwrap();
+    recovered.adapter_tick("job").await.unwrap();
+    for _ in 0..4 {
+        recovered.adapter_tick("job").await.unwrap();
+        recovered.advance("job").await.unwrap();
+    }
+    let done = recovered.get("job").unwrap();
+    assert_eq!(done.state, "done");
+    assert_eq!(done.input.base_commit, f.base);
+    assert_eq!(done.attempts, 2);
+    let integrated = done.integrated_commit.unwrap();
+    execution::git(
+        &f.config.repository,
+        &["merge-base", "--is-ancestor", &candidate, &integrated],
+    )
+    .await
+    .unwrap();
+    let prompt = s.data.lock().unwrap()["prompt"]["parts"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(prompt.contains(&candidate));
+    assert!(prompt.contains("artifact:"));
+    assert!(prompt.contains("untrusted diagnostic data"));
+    let context: Value = serde_json::from_str(
+        prompt
+            .split("Controller rework record: ")
+            .nth(1)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        context["failed_checks"][0]["log_excerpt"]
+            .as_str()
+            .unwrap()
+            .chars()
+            .count(),
+        1_000
+    );
+    h.abort();
 }
 #[tokio::test]
 async fn adapter_delivers_without_plugin_and_disables_unapproved_tools() {

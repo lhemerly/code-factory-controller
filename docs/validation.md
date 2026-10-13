@@ -13,7 +13,7 @@ Both paths ran `npm ci`, type checks, the plugin regression suite, and a trusted
 
 The source repository's upstream branch was not modified by these runs. The delivery target was a local artifact, so these results do not claim a PR, remote push or deployed application change.
 
-The automated Rust suite covers 41 cases across durable state/replay, capabilities, bound sessions, stale attempts, verification, protected scope, artifact integrity, attempt history, timeout handling, unique verifier execution identities, parallel nonconflicting integration, deliberate merge conflict, free-only provider policy and adapter restart reconciliation. Adapter unit tests use a controlled HTTP stub; they are infrastructure evidence rather than live provider measurements.
+The automated Rust suite covers durable state/replay, capabilities, bound sessions, stale attempts, verification, protected scope, artifact integrity, attempt history, timeout handling, unique verifier execution identities, parallel nonconflicting integration, deliberate merge conflict, free-only provider policy and adapter restart reconciliation. Adapter unit tests use a controlled HTTP stub; they are infrastructure evidence rather than live provider measurements.
 
 The published plugin consumer also passes against the actual Rust HTTP service. A separate process test kills that service while a real verification command is running, restarts it, reconciles the original verification request, and completes one checked delivery. Persisted-state tests cover interrupted verification and the interval after an artifact write but before final acknowledgment. The live runs additionally killed and restarted the controller after completed delivery.
 
@@ -27,3 +27,9 @@ FACTORY_PLUGIN_DIR=/absolute/path/opencode-factory-plugin node scripts/plugin-co
 ```
 
 To repeat the live application deliveries, set `FACTORY_PLUGIN_DIR` to that checkout, install its pinned OpenCode dependency, and run `node scripts/live-delivery.mjs adapter` or `node scripts/live-delivery.mjs plugin`. These scripts use temporary repositories and profiles, preserve local evidence, invoke the explicitly selected free model, and do not push the application changes. They are excluded from automatic CI provider calls.
+
+## Terminal interface and acceptance checks
+
+The terminal suite covers review-before-admission, input preservation and uncertain-response reconciliation, stale connection lockout, terminal-control sanitization, narrow layouts, receipt and broad-goal status separation, and structured evidence display. An actual controller/PTY exercise verified form and JSON admission, repeated-key protection, cancellation, disconnected writes, restart integrity and terminal restoration. This interface exercise made no provider/model calls. Its temporary repository and runtime captures are kept outside the controller repository.
+
+Structured verifier regressions reject missing observations, zero executed tests, skipped tests, mismatched commits/types and malformed output despite exit zero. A valid structured check passes both candidate verification and a distinct merged integration commit; failed observations feed rework. Legacy profiles intentionally preserve exit-status semantics. Goal-runner tests cover frozen acceptance inputs, safe legacy migration and durable setup/launch/evidence failures.

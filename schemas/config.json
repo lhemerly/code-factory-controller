@@ -73,6 +73,16 @@
         },
         "id": {
           "type": "string"
+        },
+        "result_contract": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResultContract"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false,
@@ -142,6 +152,18 @@
         "version",
         "checks",
         "timeout_seconds"
+      ]
+    },
+    "ResultContract": {
+      "type": "object",
+      "properties": {
+        "evidence_type": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "evidence_type"
       ]
     }
   }
