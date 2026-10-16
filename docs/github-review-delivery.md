@@ -65,7 +65,9 @@ when the PR has no comments, without inventing reviewer feedback.
 Publication re-audits the exact real controller receipt and delivered archive,
 checks unchanged pinned host inputs, base ancestry and approved diff paths, and
 rejects operational narrative in project-facing text using owner-defined patterns.
-The worker writes product JSON with nonempty `summary` and `limitations` arrays;
+An optional approved `commit_subject` gives the new verified commit its product title;
+existing research configurations retain their current subjects. Operational cycle
+IDs remain in the external Factory record. The worker writes product JSON with nonempty `summary` and `limitations` arrays;
 Factory builds the PR body from those fields and actual verification counts.
 Pattern checks are a mechanical gate, not a semantic relevance or secret-detection
 proof; the approved checks/review must inspect the actual product content.

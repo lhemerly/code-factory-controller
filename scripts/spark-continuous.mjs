@@ -6,7 +6,7 @@ import {resolve,dirname} from 'node:path';
 import {createHash,randomBytes} from 'node:crypto';
 import {createServer} from 'node:net';
 import {OpenCode} from './opencode-v2-client.mjs';
-import {buildResearchContext,createCycleDirectory} from './research-context.mjs';
+import {buildResearchContext,createCycleDirectory,commitSubject} from './research-context.mjs';
 import {OwnershipLease,observeResearch,awaitNativeShells} from './continuous-ownership.mjs';
 import {sandbox} from './spark-sandbox.mjs';
 import {freeModels,classify,route,failure,recoveryAction,replacementAllowed,approvedScope} from './free-model-policy.mjs';
@@ -116,7 +116,7 @@ async function runCycle(sequence){
   if(!approvedScope(git(work,'diff','--name-only',cfg.initial_base).split('\n').filter(Boolean),template))throw Error('Protected/allowed path scope violation');
   git(work,'add','--',...template.allowed_paths.filter(p=>{try{execFileSync('/usr/bin/test',['-e',resolve(work,p)]);return true}catch{return false}}));
   if(!git(work,'diff','--cached','--name-only'))throw Error('No approved candidate changes');
-  git(work,'commit','-m',goal.id+' research cycle '+sequence+' (independent verification required)');out.candidate=git(work,'rev-parse','HEAD');out.scope_approved=true;
+  git(work,'commit','-m',commitSubject(cfg,goal,sequence));out.candidate=git(work,'rev-parse','HEAD');out.scope_approved=true;
   await client.session.command({sessionID:child.id,name:'pstack-factory',text:'verify verify-'+sequence+' '+out.candidate});await op('advance');
   let verified;while(!shutdown){lease.check();verified=await op('status');if(verified.active_verification_receipt)break;if(verified.state==='blocked')throw Error('Controller verification blocked: '+JSON.stringify(verified));await delay(1500)}
   out.candidate_status=verified;if(verified?.active_verification_receipt?.outcome!=='passed')throw Error('Independent verification failed: '+JSON.stringify(verified));
