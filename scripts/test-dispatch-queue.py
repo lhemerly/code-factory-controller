@@ -139,4 +139,29 @@ class Tests(unittest.TestCase):
   with self.assertRaisesRegex(ValueError,'pin mismatch'):Q.enroll(self.queue,d,self.path,self.lookup)
   self.assertEqual(self.calls,[])
   with self.assertRaisesRegex(ValueError,'pin mismatch'):self.enqueue()
+ def failed_goal(self):
+  goal=self.goals[1];root=pathlib.Path(goal['root']);repo=root/'repository'
+  def git(*a):return subprocess.check_output(['git','-C',str(repo),'-c','core.hooksPath=/dev/null','-c','commit.gpgsign=false','-c','user.name=Fixture','-c','user.email=fixture@localhost',*a],text=True).strip()
+  git('init','-q');(repo/'frozen.txt').write_text('frozen');git('add','.');git('commit','-qm','baseline');base=git('rev-parse','HEAD');(repo/'new.txt').write_text('unaccepted');git('add','.');git('commit','-qm','candidate');candidate=git('rev-parse','HEAD')
+  cfg=Q.read(root/'supervisor.json');cfg['initial_base']=base;D.save(root/'supervisor.json',cfg);D.save(root/'job-template.json',{'allowed_paths':['new.txt'],'protected_paths':['frozen.txt']})
+  self.intent['trusted_files'].update({str(root/p):Q.sha(root/p) for p in ['supervisor.json','job-template.json']});self.enqueue();d=self.manager();Q.enroll(self.queue,d,self.path,self.lookup)
+  receipt={'verification_id':'receipt-failed','candidate_commit':candidate,'outcome':'failed'};recovery={'stop_id':'owned-stop','execution_stop':{'status':'confirmed'},'accounting':{'status':'unknown'}}
+  out={'goal_id':goal['id'],'sequence':1,'job_id':'failed-job','status':'failed','cleanup_confirmed':True,'candidate':candidate,'scope_approved':True,'failure_kind':'blocked','candidate_status':{'active_verification_receipt':receipt},'recovery':recovery}
+  D.save(root/'failed.json',out);D.save(root/'status.json',{'sequence':1,'current':None,'base':base,'accepted':[],'status':'paused','last_cycle':{'result':str(root/'failed.json')}});d.s['goals']['new'].update(state='paused',native_status='failed');d.s['goals']['existing']['state']='paused';d.persist()
+  observed={'candidate_commit':candidate,'active_verification_receipt':receipt,'execution_recovery':recovery};return d,goal,out,observed
+ def test_failed_candidate_retry_is_receipt_bound_idempotent_and_unaccepted(self):
+  d,g,out,observed=self.failed_goal();inspect=lambda *args:observed
+  request=Q.request_retry(self.queue,d.m,'new',inspect,D.Locks);self.assertEqual(request,Q.request_retry(self.queue,d.m,'new',inspect,D.Locks));self.assertEqual(len(self.queue.snapshot()['retries']),1)
+  Q.retry_goals(self.queue,d,inspect,D.Locks);status=Q.read(pathlib.Path(g['root'])/'status.json');self.assertEqual(status['base'],out['candidate']);self.assertEqual(status['accepted'],[]);self.assertEqual(d.s['goals']['new']['state'],'ready')
+  Q.retry_goals(self.queue,d,inspect,D.Locks);self.assertEqual(len(d.s['queue_retries']),1);self.assertEqual(observed['execution_recovery']['accounting']['status'],'unknown')
+ def test_retry_refuses_forged_stale_stop_and_user_pause(self):
+  d,g,out,observed=self.failed_goal();inspect=lambda *args:observed;bad=copy.deepcopy(observed);bad['execution_recovery']['stop_id']='forged'
+  with self.assertRaisesRegex(ValueError,'exact owned stop'):Q.request_retry(self.queue,d.m,'new',lambda *a:bad,D.Locks)
+  pause=pathlib.Path(g['root'])/'PAUSE';pause.write_text('User stop')
+  with self.assertRaisesRegex(ValueError,'PAUSE'):Q.request_retry(self.queue,d.m,'new',inspect,D.Locks)
+  pause.unlink();Q.request_retry(self.queue,d.m,'new',inspect,D.Locks);out['sequence']=2;D.save(pathlib.Path(g['root'])/'failed.json',out)
+  with self.assertRaises(ValueError):Q.retry_goals(self.queue,d,inspect,D.Locks)
+ def test_retry_refuses_native_permission_block_without_a_failed_receipt(self):
+  d,g,out,observed=self.failed_goal();out['candidate']=None;out['candidate_status']={};D.save(pathlib.Path(g['root'])/'failed.json',out);observed['active_verification_receipt']=None
+  with self.assertRaisesRegex(ValueError,'Permission/ownership'):Q.request_retry(self.queue,d.m,'new',lambda *a:observed,D.Locks)
 if __name__=='__main__':unittest.main(verbosity=2)

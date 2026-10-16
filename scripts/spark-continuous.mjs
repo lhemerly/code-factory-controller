@@ -127,7 +127,7 @@ async function runCycle(sequence){
   if(sha(await readFile(done.delivery.destination))!==done.delivery.sha256)throw Error('Delivered archive hash mismatch');
   out.acceptance=done;out.status='accepted';await atomic(resolve(dir,'accepted.json'),done);
   try{out.scientific_blocker=(await readFile(resolve(work,'docs/BLOCKED.md'),'utf8')).slice(0,4000)}catch{}
- }catch(e){out.error=red(String(e)).slice(0,20000);out.failure_kind=out.error.includes('scope violation')?'blocked':classify(out.error,phase);out.status='failed';}
+ }catch(e){out.error=red(String(e)).slice(0,20000);out.failure_kind=classify(out.error,phase);out.status='failed';}
  finally{
   if(lease)await lease.stop();out.phase=phase;
   if(child&&client){try{const s=await client.session.get({sessionID:child.id});out.usage={model:s.model??null,cost:s.cost??null,tokens:s.tokens??null};out.native_session=safe(s);await atomic(resolve(dir,'native-session-final.json'),safe(s));await atomic(resolve(dir,'native-context-final.json'),safe(await client.session.context({sessionID:child.id})))}catch(e){out.accounting_error=red(String(e));out.usage??={cost:null,tokens:null,model:null}}}

@@ -7,6 +7,8 @@ export function freeModels(models) {
     .sort((a,b) => a.id === 'opencode/big-pickle' ? -1 : b.id === 'opencode/big-pickle' ? 1 : a.id.localeCompare(b.id));
 }
 export function classify(text, phase='native') {
+  // The controller's structured test verdict is not an access denial embedded in a task/log.
+  if (phase === 'verification' && /^Error: Independent verification failed: /.test(text)) return 'repair';
   if (/permission.?denied|requires?.?approval|scope violation|ownership.*(?:changed|unknown)|V2 active or unknown shell work|V2 shell.*(?:scope|unknown)/i.test(text)) return 'blocked';
   if (phase === 'verification') return 'repair';
   if (/Factory model has nonzero or unknown pricing/.test(text)) return 'unavailable';

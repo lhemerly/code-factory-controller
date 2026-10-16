@@ -216,11 +216,17 @@ def owner_resume(manifest):
 def registered_goal(controller,config):
  return json.loads(subprocess.check_output([controller,'goal','--config',str(config)],text=True,timeout=30))
 
+def inspect_job(controller,config,job):
+ return json.loads(subprocess.check_output([controller,'inspect','--config',str(config),'--job',job],text=True,timeout=40))
+
 def main():
- p=argparse.ArgumentParser();p.add_argument('action',choices=['run','status','enqueue','stage-update','queue-status']);p.add_argument('--manifest',required=True,type=pathlib.Path);p.add_argument('--resume',action='store_true');p.add_argument('--policy-migration',type=pathlib.Path);p.add_argument('--queue',type=pathlib.Path);p.add_argument('--input',type=pathlib.Path);p.add_argument('--wait-for-owner',action='store_true');p.add_argument('--exit-when-idle',action='store_true');a=p.parse_args();m=json.loads(a.manifest.read_text());state=pathlib.Path(m['state'])
+ p=argparse.ArgumentParser();p.add_argument('action',choices=['run','status','enqueue','stage-update','queue-status','retry']);p.add_argument('--manifest',required=True,type=pathlib.Path);p.add_argument('--resume',action='store_true');p.add_argument('--policy-migration',type=pathlib.Path);p.add_argument('--queue',type=pathlib.Path);p.add_argument('--input',type=pathlib.Path);p.add_argument('--goal');p.add_argument('--wait-for-owner',action='store_true');p.add_argument('--exit-when-idle',action='store_true');a=p.parse_args();m=json.loads(a.manifest.read_text());state=pathlib.Path(m['state'])
  queue=queue_api.Queue(a.queue,save) if a.queue else None
- if a.action in ['enqueue','stage-update','queue-status']:
+ if a.action in ['enqueue','stage-update','queue-status','retry']:
   if not queue:p.error('--queue required')
+  if a.action=='retry':
+   if not a.goal:p.error('--goal required')
+   item=queue_api.request_retry(queue,m,a.goal,inspect_job,Locks);print(json.dumps({'state':'retry_queued','request':item['id'],'goal':item['goal']}));return
   if a.action=='enqueue':
    if not a.input:p.error('--input required')
    item=queue.enqueue(json.loads(a.input.read_text()),m,registered_goal);print(json.dumps({'state':'queued','intent':item['id'],'goal':item['input']['goal']['id']}));return
@@ -270,6 +276,7 @@ def main():
     if queue_api.digest(dispatcher.m)!=queue_api.digest(queue_api.read(a.manifest)):
      dispatcher=Dispatcher(queue_api.read(a.manifest),state);dispatcher.pool_fds=locks.fds();dispatcher.recover_and_audit()
     queue_api.enroll(queue,dispatcher,a.manifest,registered_goal)
+    queue_api.retry_goals(queue,dispatcher,inspect_job,Locks)
    if dispatcher.step():continue
    if not queue:
     if dispatcher.s['status'] in ('complete','paused'):break

@@ -48,3 +48,8 @@ test('inconclusive science, worker blocker prose and rejected candidates request
 });
 
 test('genuine permission and ownership denial never become scientific repair or provider fallback',()=>{for(const error of ['PermissionDeniedError','permission denied','requires approval','scope violation','ownership changed','V2 active or unknown shell work'])assert.equal(classify(error,'verification'),'blocked')});
+
+test('serialized receipt metadata cannot turn independent test failure into a permission blocker',()=>{
+ assert.equal(classify('Error: Independent verification failed: {"protected_paths":["continuous-ownership.mjs"],"task":"unknown usage"}','verification'),'repair');
+ assert.equal(classify('permission denied','verification'),'blocked');
+});

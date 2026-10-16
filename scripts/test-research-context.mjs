@@ -114,3 +114,8 @@ test('cycle directory width is not a research iteration cap',async t=>{
  const f=await fixture(t);assert.equal(await createCycleDirectory(f.root,1000000),join(f.root,'cycles','1000000'));
  await assert.rejects(createCycleDirectory(f.root,999999),/overlaps persisted history/);
 });
+
+test('owner verifier namespace facts survive admission with provenance and do not grant acceptance',async t=>{
+ const f=await fixture(t);f.input.cfg.data=f.root;await writeFile(join(f.root,'VERIFIER-CONTRACT.md'),'Inputs are mounted at /inputs; use standard temporary directories.');
+ const c=await buildResearchContext(f.input);assert.match(c.text,/VERIFIER NAMESPACE FACTS/);assert.match(c.text,/not an acceptance receipt or permission expansion/);assert.equal(c.provenance.verification_contract_sha256.length,64);
+});

@@ -84,7 +84,8 @@ export async function buildResearchContext({root,repo,state,goal,cfg,beforeSeque
   'NEXT: Inspect the repository at this exact base and the current applicable planning documents. Choose a useful experiment, repair or negative control toward the unresolved goal using accumulated evidence. Preserve frozen tests and exact evidence. Worker planning prose is unverified; reconcile its claims with these outcomes. Do not repeat an obsolete cycle directive or a cosmetic documentation patch. Report actionable missing inputs when further progress is blocked.'
  ].join('\n\n');
  if(Buffer.byteLength(required)>maxBytes)throw Error('Required goal and outcome context exceeds admission budget; no context was truncated');
- const task=await readFile(resolve(root,'task.txt'),'utf8');
+ let contract='';try{if(cfg.data)contract=await readFile(resolve(cfg.data,'VERIFIER-CONTRACT.md'),'utf8')}catch(e){if(e.code!=='ENOENT'&&e.code!=='ERR_INVALID_ARG_TYPE')throw e}
+ const task=await readFile(resolve(root,'task.txt'),'utf8')+(contract?'\nVERIFIER NAMESPACE FACTS (not an acceptance receipt or permission expansion):\n'+contract:'');
  const initial=completed.length===0&&cfg.initial_continuation?'\nInitial operator guidance: '+cfg.initial_continuation:'';
  const optional='\n\nPROJECT INSTRUCTIONS:\n'+task+initial+'\n\nChanged paths at base: '+JSON.stringify(changes)+'\nPlanning references at base (path and Git blob; read applicable current entries): '+JSON.stringify(planning);
  // Instructions must also survive intact. Oversized auxiliary paths are omitted explicitly.
@@ -92,5 +93,5 @@ export async function buildResearchContext({root,repo,state,goal,cfg,beforeSeque
  if(Buffer.byteLength(required+instructions)>maxBytes)throw Error('Project instructions exceed admission budget; no instructions were truncated');
  const text=required+(Buffer.byteLength(required+optional)<=maxBytes?optional:instructions+'\nAuxiliary path inventory omitted for budget; inspect git show --stat and docs at the exact base.');
  if(Buffer.byteLength(text)>maxBytes)throw Error('Context exceeds admission budget');
- return {text,provenance:{version:1,base,goal_sha256:digest(JSON.stringify(goal)),sources,context_sha256:digest(text),legacy_continuation_ignored:true}};
+ return {text,provenance:{version:1,base,goal_sha256:digest(JSON.stringify(goal)),sources,context_sha256:digest(text),legacy_continuation_ignored:true,verification_contract_sha256:contract?digest(contract):null}};
 }
