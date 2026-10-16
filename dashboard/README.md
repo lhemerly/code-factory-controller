@@ -71,7 +71,7 @@ python3 -m unittest dashboard.tests.test_fixtures
 
 Executed evidence (2026-10-16, Python 3.14.7):
 
-- `Ran 52 tests ... OK` — zero failures, zero errors, zero warnings, on every
+- `Ran 59 tests ... OK` — zero failures, zero errors, zero warnings, on every
   invocation above. Two of those lock the state-root contract: real-state checks
   read `FACTORY_DASHBOARD_STATE_ROOT` when set and fall back to `data/` only for
   native development, and no test assumes a machine-specific temp path.
@@ -90,12 +90,23 @@ Executed evidence (2026-10-16, Python 3.14.7):
 | file | covers |
 | --- | --- |
 | `dashboard/tests/test_real_state.py` | real captured state: capture hashes, top bar, token/time accounting vs independent re-reads, staleness, What happens next, surface rules, read-only/no-network refresh |
+| `dashboard/tests/test_current_state.py` | paused/awaiting-review/complete/unknown lifecycle states, stale cross-project cycle references, in-flight task and active-cycle time |
 | `dashboard/tests/test_state_root.py` | state-root contract: `FACTORY_DASHBOARD_STATE_ROOT` selects the tree, `data/` is only the dev fallback |
 | `dashboard/tests/test_fixtures.py` | synthetic fixtures: stale activity, missing metrics (unknown ≠ zero), incomplete goals, active vs queued with a process record present |
 | `dashboard/tests/test_server.py` | loopback binding, routes, 404/405, HTML/JSON payloads, no file mutation across requests, 500 path without absolute-path leaks |
 | `dashboard/tests/test_loader_safety.py` | deny-list, traversal, allowlist reads, capture-tamper detection, live-vs-snapshot mode |
 | `dashboard/tests/fixtures/mixed/` | 3-goal fixture: fresh-active, stale-waiting, incomplete + missing metrics (self-hashing `capture.json`) |
 | `dashboard/tests/fixtures/no-metrics/` | cycle that never reached a model: every usage/time field must render as unknown |
+
+Scope review corrections: inactive does not imply queued. A paused accepted
+implementation is **awaiting review**; paused, complete and unknown projects stay
+out of the queue count. An in-flight task is read from its matching cycle, and an
+owned current cycle contributes elapsed time to active-cycle time. Active time is
+cycle wall time, including provider/tool waits, not CPU/GPU utilization. An
+abandoned unfinished cycle remains unknown/partial.
+
+CI runs the synthetic, lifecycle, loader, state-root and HTTP suites without private
+inputs. Full captured-state checks additionally require the configured owner capture.
 
 ## What the dashboard shows
 

@@ -264,6 +264,14 @@ def build_time(cycles: list[dict], status: dict | None, as_of: dt.datetime) -> d
             active += (end - start).total_seconds()
             starts.append(start)
             ends.append(end)
+        elif (start and not end and result.get("status") == "running"
+              and (status or {}).get("status") == "running"
+              and result.get("sequence") == (status or {}).get("sequence")
+              and result.get("sequence") == ((status or {}).get("current") or {}).get("sequence")
+              and as_of >= start):
+            active += (as_of - start).total_seconds()
+            starts.append(start)
+            ends.append(as_of)
         else:
             missing += 1
     status_updated = parse_ts((status or {}).get("updated_utc"))
@@ -366,8 +374,20 @@ def _verdict(project: dict, stale_after: int, as_of: dt.datetime) -> dict:
     age = age_seconds(activity, as_of)
     stale = age is None or age > stale_after
 
+    if active:
+        scheduling = "active"
+    elif status.get("status") == "paused":
+        scheduling = "paused"
+    elif dispatcher_goal.get("state") == "paused":
+        scheduling = "awaiting_review" if dispatcher_goal.get("native_status") == "accepted" else "paused"
+    elif dispatcher_goal.get("state") == "complete":
+        scheduling = "complete"
+    elif dispatcher_goal.get("state") == "ready":
+        scheduling = "queued"
+    else:
+        scheduling = "unknown"
     parts = [
-        f"{'Active' if active else 'Queued'} per {'project status' if fresher == 'status' else 'dispatcher state'}"
+        f"{scheduling.replace('_', ' ').capitalize()} per {'project status' if fresher == 'status' else 'dispatcher state'}"
         f" ({iso(stat_ts) if fresher == 'status' else iso(disp_ts) or 'no timestamp'})"
     ]
     if disp_active != stat_active:
@@ -385,6 +405,7 @@ def _verdict(project: dict, stale_after: int, as_of: dt.datetime) -> dict:
 
     return {
         "active": active,
+        "state": scheduling,
         "stale": stale,
         "age_seconds": age,
         "last_activity_utc": iso(activity),
@@ -398,9 +419,18 @@ def _current_task(project: dict, verdict: dict, last_cycle: dict | None, as_of: 
     status = project.get("status") or {}
     current = dispatcher.get("current") if isinstance(dispatcher.get("current"), dict) else {}
     if verdict["active"]:
-        expected = current.get("expected_sequence") or (status.get("sequence") or "?")
+        expected = (current.get("expected_sequence") if current.get("goal") == project["goal_id"] else None) or (status.get("current") or {}).get("sequence") or status.get("sequence") or "?"
         task = f"In-flight: dispatcher phase 'running' expects cycle {expected}"
         note = "task text for the in-flight cycle is not present in the read state files"
+        result = ((last_cycle or {}).get("files") or {}).get("result.json") or {}
+        if str((last_cycle or {}).get("dir", "")).lstrip("0") == str(expected):
+            text = result.get("task") or ""
+            if "PROJECT INSTRUCTIONS:\n" in text:
+                text = text.split("PROJECT INSTRUCTIONS:\n", 1)[1]
+            line = _first_line(text)
+            if line:
+                task = f"In-flight cycle {expected}: {line}"
+                note = "approved task from the current cycle's result record"
         if verdict["stale"]:
             note += (
                 f"; the record is {fmt_age(verdict['age_seconds'])} old, so this cycle may already "
@@ -416,7 +446,7 @@ def _current_task(project: dict, verdict: dict, last_cycle: dict | None, as_of: 
     result = (last_cycle.get("files") or {}).get("result.json") or {}
     line = _first_line(result.get("task"))
     return {
-        "text": "none — project is waiting",
+        "text": "none — " + ({"awaiting_review": "awaiting review", "paused": "project is paused", "complete": "goal is complete", "unknown": "scheduling state unknown"}.get(verdict["state"], "project is waiting")),
         "note": f"last completed task (cycle {last_cycle.get('dir')}): {line}" if line else
         f"last completed task (cycle {last_cycle.get('dir')}): not recorded",
         "kind": "waiting",
@@ -623,7 +653,7 @@ def _build_topbar(raw: dict, projects: list[dict], as_of: dt.datetime, stale_aft
     launch = raw.get("launch") or {}
     dispatcher = raw.get("dispatcher") or {}
     active = [p["goal_id"] for p in projects if p["activity"]["active"]]
-    queued = [p["goal_id"] for p in projects if not p["activity"]["active"]]
+    queued = [p["goal_id"] for p in projects if p["activity"]["state"] == "queued"]
     slots = launch.get("worker_slots")
     slots_total = slots if isinstance(slots, int) and not isinstance(slots, bool) else None
     available = max(slots_total - len(active), 0) if slots_total is not None else None

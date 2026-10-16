@@ -72,7 +72,7 @@ def _project_html(track: dict) -> str:
         f'goal {"unresolved" if not track["goal_acceptance"]["passed"] else "accepted"}'
         f"</span>",
         f'<span class="chip">{track["completion_criteria_count"]} completion criteria</span>',
-        f'<span class="chip">{"ACTIVE" if activity["active"] else "queued"}</span>',
+        f'<span class="chip">{esc(activity["state"].replace("_", " ").upper() if activity["active"] else activity["state"].replace("_", " "))}</span>',
     ]
     if activity["stale"]:
         chips.append('<span class="chip warn">stale activity</span>')
