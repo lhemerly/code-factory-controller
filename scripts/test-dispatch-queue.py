@@ -151,7 +151,7 @@ class Tests(unittest.TestCase):
   observed={'candidate_commit':candidate,'active_verification_receipt':receipt,'execution_recovery':recovery};return d,goal,out,observed
  def test_failed_candidate_retry_is_receipt_bound_idempotent_and_unaccepted(self):
   d,g,out,observed=self.failed_goal();inspect=lambda *args:observed
-  request=Q.request_retry(self.queue,d.m,'new',inspect,D.Locks);self.assertEqual(request,Q.request_retry(self.queue,d.m,'new',inspect,D.Locks));self.assertEqual(len(self.queue.snapshot()['retries']),1)
+  request=Q.request_retry(self.queue,d.m,'new',inspect,D.Locks);self.assertEqual(request,Q.request_retry(self.queue,d.m,'new',inspect,D.Locks));self.assertEqual(len(self.queue.snapshot()['retries']),1);self.assertEqual(self.queue.describe(d.s)[0]['state'],'retry_queued')
   Q.retry_goals(self.queue,d,inspect,D.Locks);status=Q.read(pathlib.Path(g['root'])/'status.json');self.assertEqual(status['base'],out['candidate']);self.assertEqual(status['accepted'],[]);self.assertEqual(d.s['goals']['new']['state'],'ready')
   Q.retry_goals(self.queue,d,inspect,D.Locks);self.assertEqual(len(d.s['queue_retries']),1);self.assertEqual(observed['execution_recovery']['accounting']['status'],'unknown')
  def test_retry_refuses_forged_stale_stop_and_user_pause(self):

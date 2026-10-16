@@ -63,10 +63,11 @@ class Queue:
   self.sock.unlink(missing_ok=True)
   channel=socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM);channel.bind(str(self.sock));os.chmod(self.sock,0o600);return channel
  def describe(self,state):
-  result=[]
-  for item in self.snapshot()['goals']:
+  result=[];snapshot=self.snapshot();applied={r['id'] for r in state.get('queue_retries',[])}
+  for item in snapshot['goals']:
    name=item['input']['goal']['id'];gs=state.get('goals',{}).get(name);current=state.get('current') or {}
    status='queued' if gs is None else 'blocked' if state.get('status')=='needs_attention' and current.get('goal')==name else 'running' if current.get('goal')==name else 'completed' if gs.get('state')=='complete' else 'awaiting_review' if gs.get('state')=='paused' and gs.get('native_status')=='accepted' else 'blocked' if gs.get('state')=='paused' else 'queued'
+   if current.get('goal')!=name and any(r['goal']==name and r['id'] not in applied for r in snapshot.get('retries',[])):status='retry_queued'
    result.append({'id':name,'intent':item['id'],'state':status,'software_milestones':len(gs.get('milestones',[])) if gs else 0})
   return result
 
