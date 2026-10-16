@@ -9,6 +9,7 @@ def module(name,file):
  spec=importlib.util.spec_from_file_location(name,ROOT/file);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);return m
 save=module('goal_storage','goal-runner.py').save
 acceptance=module('final_goal_acceptance','goal-acceptance.py')
+queue_api=module('dispatch_intents','dispatch-queue.py')
 
 def utc():return datetime.datetime.now(datetime.timezone.utc).isoformat()
 def digest(v):return hashlib.sha256(json.dumps(v,sort_keys=True).encode()).hexdigest()
@@ -43,9 +44,9 @@ def migrate_launch_policy(manifest,state_path,migration_path):
 
 class Locks:
  def __init__(self):self.files=[]
- def acquire(self,path):
+ def acquire(self,path,wait=False):
   p=pathlib.Path(path);p.parent.mkdir(parents=True,exist_ok=True);f=p.open('a')
-  try:fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)
+  try:fcntl.flock(f,fcntl.LOCK_EX|(0 if wait else fcntl.LOCK_NB))
   except BlockingIOError:f.close();raise RuntimeError('Another owner holds '+str(p))
   os.set_inheritable(f.fileno(),True);self.files.append(f);return f
  def close(self):
@@ -126,11 +127,14 @@ class Dispatcher:
   milestone=self.audit(goal,out)
   gs['last_result']=str(p);gs['usage']=out.get('usage');gs['model']=out.get('model');gs['native_status']=out.get('status');gs['harness']=goal['cycle_command']
   self.s['circuits']=merge_circuits(self.s.get('circuits',{}),status.get('circuits',{}))
+  if self.m.get('circuits_file'):save(pathlib.Path(self.m['circuits_file']),self.s['circuits'])
   if milestone:
    if not any(m['job']==milestone['job'] for m in gs['milestones']):gs['milestones'].append(milestone)
    result=self.complete(goal,milestone);gs['goal_acceptance']=result
    if result.get('passed') is True and result.get('status')=='passed' and result.get('commit')==milestone['commit'] and result.get('receipts'):
     gs['state']='complete';gs['completion_milestone']=milestone;return
+  if goal.get('admission_mode')=='one_cycle' and out['status']!='all_free_unavailable':
+   gs['state']='paused';gs['reason']='Bounded implementation cycle ended; independent review or explicit repair admission required';return
   if status.get('status')=='paused':gs['state']='paused';gs['reason']=status.get('pause_reason');return
   gs['state']='ready';gs['next_at']=self.clock()+goal.get('between_cycles_seconds',1)
   if out['status']=='all_free_unavailable':
@@ -209,18 +213,51 @@ def owner_resume(manifest):
   if s.get('status')=='paused' or (root/'PAUSE').exists():
    subprocess.run([sys.executable,str(ROOT/'spark-control.py'),'resume','--root',str(root),'--reason','Owner explicitly launched the shared two-goal foreground dispatcher; inspect prior owned-stop evidence and continue preserved checkpoints'],check=True)
 
+def registered_goal(controller,config):
+ return json.loads(subprocess.check_output([controller,'goal','--config',str(config)],text=True,timeout=30))
+
 def main():
- p=argparse.ArgumentParser();p.add_argument('action',choices=['run','status']);p.add_argument('--manifest',required=True,type=pathlib.Path);p.add_argument('--resume',action='store_true');p.add_argument('--policy-migration',type=pathlib.Path);a=p.parse_args();m=json.loads(a.manifest.read_text());state=pathlib.Path(m['state'])
+ p=argparse.ArgumentParser();p.add_argument('action',choices=['run','status','enqueue','stage-update','queue-status']);p.add_argument('--manifest',required=True,type=pathlib.Path);p.add_argument('--resume',action='store_true');p.add_argument('--policy-migration',type=pathlib.Path);p.add_argument('--queue',type=pathlib.Path);p.add_argument('--input',type=pathlib.Path);p.add_argument('--wait-for-owner',action='store_true');p.add_argument('--exit-when-idle',action='store_true');a=p.parse_args();m=json.loads(a.manifest.read_text());state=pathlib.Path(m['state'])
+ queue=queue_api.Queue(a.queue,save) if a.queue else None
+ if a.action in ['enqueue','stage-update','queue-status']:
+  if not queue:p.error('--queue required')
+  if a.action=='enqueue':
+   if not a.input:p.error('--input required')
+   item=queue.enqueue(json.loads(a.input.read_text()),m,registered_goal);print(json.dumps({'state':'queued','intent':item['id'],'goal':item['input']['goal']['id']}));return
+  if a.action=='stage-update':
+   if not a.input:p.error('--input required')
+   item=queue.stage(json.loads(a.input.read_text()));print(json.dumps({'state':'staged','update':item['id']}));return
+  observed=json.loads(state.read_text()) if state.exists() else {};items=queue.describe(observed)
+  if a.input:
+   envelope=json.loads(a.input.read_text());name=envelope['goal']['id']
+   if not any(i['id']==name for i in items):
+    queue_api.validate_goal(envelope,m,registered_goal);items.append({'id':name,'state':'registered','intent':None})
+  print(json.dumps({'goals':items,'owner':queue_api.read(queue.root/'owner.json') if (queue.root/'owner.json').exists() else None},indent=2));return
  if a.action=='status':print(state.read_text() if state.exists() else json.dumps({'status':'not_started'}));return
  if not m.get('trusted_files'):raise ValueError('Owner launcher requires a pinned trusted_files manifest')
+ if a.wait_for_owner and not queue:p.error('--wait-for-owner requires --queue')
  def stopping(signum,frame):raise KeyboardInterrupt('Owner requested stop')
  signal.signal(signal.SIGTERM,stopping)
- locks=Locks()
+ locks=Locks();queue_lock=Locks();receiver=None
  try:
-  locks.acquire(m['pool_lock'])
+  if queue:
+   queue_lock.acquire(queue.root/'owner.lock')
+   save(queue.root/'owner.json',{'state':'waiting_for_boundary','process':{k:v for k,v in identity(os.getpid()).items() if k!='argv'},'dispatcher_sha256':queue_api.sha(pathlib.Path(__file__))})
+  locks.acquire(m['pool_lock'],wait=a.wait_for_owner) # Kernel wait, no polling and no second worker.
+  m=json.loads(a.manifest.read_text());state=pathlib.Path(m['state'])
+  if queue:
+   journal=queue.root/'update-journal.json'
+   if journal.exists():queue_api.restore(queue,queue_api.read(journal));m=queue_api.read(a.manifest)
+   journal=queue.root/'enroll-journal.json'
+   if journal.exists():
+    saved=queue_api.read(journal);save(a.manifest,saved['manifest']);save(state,saved['state']);queue_api.unlink_durable(journal);m=saved['manifest']
   if a.policy_migration:migrate_launch_policy(m,state,a.policy_migration)
   dispatcher=Dispatcher(m,state);dispatcher.pool_fds=locks.fds()
   dispatcher.recover_and_audit()
+  if queue:
+   queue_api.boundary_updates(queue,a.manifest,state,Locks,audit=lambda proposed:Dispatcher(proposed,state).recover_and_audit())
+   m=queue_api.read(a.manifest);dispatcher=Dispatcher(m,state);dispatcher.pool_fds=locks.fds();dispatcher.recover_and_audit();receiver=queue.receiver()
+   save(queue.root/'owner.json',{'state':'active','process':{k:v for k,v in identity(os.getpid()).items() if k!='argv'},'dispatcher_sha256':queue_api.sha(pathlib.Path(__file__))})
   if a.resume:owner_resume(m)
   if a.resume:
    for goal in m['goals']:
@@ -228,10 +265,25 @@ def main():
     if gs['state']=='paused' and dispatcher.read_status(goal).get('status')!='paused':gs['state']='ready'
    dispatcher.persist()
   while True:
+   if queue:
+    queue_api.boundary_updates(queue,a.manifest,state,Locks,audit=lambda proposed:Dispatcher(proposed,state).recover_and_audit())
+    if queue_api.digest(dispatcher.m)!=queue_api.digest(queue_api.read(a.manifest)):
+     dispatcher=Dispatcher(queue_api.read(a.manifest),state);dispatcher.pool_fds=locks.fds();dispatcher.recover_and_audit()
+    queue_api.enroll(queue,dispatcher,a.manifest,registered_goal)
    if dispatcher.step():continue
-   if dispatcher.s['status'] in ('complete','paused'):break
-   time.sleep(1)
+   if not queue:
+    if dispatcher.s['status'] in ('complete','paused'):break
+    time.sleep(1);continue
+   if a.exit_when_idle and dispatcher.s['status'] in ('complete','paused'):break
+   # Only owner intake wakes idle admission. Existing provider backoff remains a scheduler timer.
+   eligible=[g.get('next_at',time.time()) for g in dispatcher.s['goals'].values() if g['state'] not in ('complete','paused')]
+   receiver.settimeout(max(.01,min(eligible)-time.time()) if eligible else None)
+   try:receiver.recv(1)
+   except TimeoutError:pass
  except KeyboardInterrupt:
   if 'dispatcher' in locals():dispatcher.s['status']='needs_attention';dispatcher.s['reason']='Owner stopped dispatcher; audit retained cycle cleanup before resuming';dispatcher.persist()
- finally:locks.close()
+ finally:
+  if receiver:receiver.close();queue.sock.unlink(missing_ok=True)
+  if queue and queue_lock.files:save(queue.root/'owner.json',{'state':'stopped','process':None})
+  locks.close();queue_lock.close()
 if __name__=='__main__':main()

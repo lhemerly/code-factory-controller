@@ -23,6 +23,7 @@ jobs:
       - run: python3 scripts/test-goal-acceptance.py
       - run: python3 scripts/test-cli-updater.py
       - run: python3 scripts/test-research-dispatch.py
+      - run: python3 scripts/test-dispatch-queue.py
       - run: node scripts/test-continuous-ownership.mjs
       - run: node scripts/test-free-model-policy.mjs
       - run: node scripts/test-research-context.mjs
@@ -35,7 +36,9 @@ jobs:
       - run: cargo test --locked
       - run: cargo build --locked
       - name: Exercise two-goal owner CLI (fake providers, real verification)
-        run: python3 scripts/test-dispatch-cli.py
+        run: |
+          python3 scripts/test-dispatch-cli.py
+          python3 scripts/test-queue-cli.py
       - run: cargo run --locked -- schemas --output schemas
       - run: git diff --exit-code -- schemas
       - name: Load independent plugin consumer
