@@ -107,8 +107,20 @@ def sha256_file(root: Path, rel: str) -> str | None:
     return digest.hexdigest()
 
 
-def _goal_dir(entry: dict, index: int) -> str:
+def _goal_dir(entry: dict, index: int, state_root: Path) -> str:
     root_val = str(entry.get("root") or "")
+    configured = Path(os.path.realpath(state_root))
+    candidate = Path(root_val)
+    if not candidate.is_absolute():
+        candidate = configured / candidate
+    try:
+        rel = candidate.relative_to(configured).as_posix()
+        if rel != ".":
+            safe_join(configured, rel)
+            return rel
+    except ValueError:
+        pass
+    # Captures and synthetic fixtures may retain a source-machine absolute root.
     name = os.path.basename(root_val.rstrip("/"))
     if not name or name in (".", ".."):
         raise LoaderError("goal entry has an unsafe directory name", f"goals[{index}]")
@@ -211,7 +223,7 @@ def load_state(state_root) -> dict:
     for index, entry in enumerate(launch["goals"]):
         if not isinstance(entry, dict):
             raise LoaderError("goal entry must be an object", LAUNCH_REL)
-        goal_dir = _goal_dir(entry, index)
+        goal_dir = _goal_dir(entry, index, root)
         goal_file = read_json(root, f"{goal_dir}/goal.json", required=False)
         status_file = read_json(root, f"{goal_dir}/status.json", required=False)
         for rel, data in (

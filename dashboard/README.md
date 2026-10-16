@@ -71,7 +71,7 @@ python3 -m unittest dashboard.tests.test_fixtures
 
 Executed evidence (2026-10-16, Python 3.14.7):
 
-- `Ran 59 tests ... OK` — zero failures, zero errors, zero warnings, on every
+- `Ran 60 tests ... OK` — zero failures, zero errors, zero warnings, on every
   invocation above. Two of those lock the state-root contract: real-state checks
   read `FACTORY_DASHBOARD_STATE_ROOT` when set and fall back to `data/` only for
   native development, and no test assumes a machine-specific temp path.
@@ -104,6 +104,9 @@ out of the queue count. An in-flight task is read from its matching cycle, and a
 owned current cycle contributes elapsed time to active-cycle time. Active time is
 cycle wall time, including provider/tool waits, not CPU/GPU utilization. An
 abandoned unfinished cycle remains unknown/partial.
+
+Nested admitted goal roots are resolved within the configured state root; the
+same allowlist, deny-list and symlink-escape checks remain in force.
 
 CI runs the synthetic, lifecycle, loader, state-root and HTTP suites without private
 inputs. Full captured-state checks additionally require the configured owner capture.
