@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {buildResearchContext,createCycleDirectory} from './research-context.mjs';
+import {buildResearchContext,createCycleDirectory,commitSubject} from './research-context.mjs';
 const sha=b=>createHash('sha256').update(b).digest('hex');
 async function fixture(t){
  const root=await mkdtemp(join(tmpdir(),'factory-context-'));t.after(()=>rm(root,{recursive:true,force:true}));
@@ -118,4 +118,10 @@ test('cycle directory width is not a research iteration cap',async t=>{
 test('owner verifier namespace facts survive admission with provenance and do not grant acceptance',async t=>{
  const f=await fixture(t);f.input.cfg.data=f.root;await writeFile(join(f.root,'VERIFIER-CONTRACT.md'),'Inputs are mounted at /inputs; use standard temporary directories.');
  const c=await buildResearchContext(f.input);assert.match(c.text,/VERIFIER NAMESPACE FACTS/);assert.match(c.text,/not an acceptance receipt or permission expansion/);assert.equal(c.provenance.verification_contract_sha256.length,64);
+});
+
+test('approved product commit subject excludes cycle bookkeeping and validates controls',()=>{
+ assert.equal(commitSubject({commit_subject:'Add model-free baselines'},{id:'internal-goal'},3),'Add model-free baselines');
+ assert.equal(commitSubject({},{id:'research'},3),'research research cycle 3 (independent verification required)');
+ for(const title of ['',42,'a\nb','a'.repeat(181)])assert.throws(()=>commitSubject({commit_subject:title},{id:'research'},3),/Invalid approved/);
 });

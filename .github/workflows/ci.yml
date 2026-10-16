@@ -25,6 +25,8 @@ jobs:
       - run: python3 scripts/test-research-dispatch.py
       - run: python3 scripts/test-dispatch-queue.py
       - run: python3 scripts/test-queue-handoff.py
+      - run: python3 scripts/test-github-review.py
+      - run: node --experimental-strip-types scripts/test-pstack-github.mjs
       - run: node scripts/test-continuous-ownership.mjs
       - run: node scripts/test-free-model-policy.mjs
       - run: node scripts/test-research-context.mjs
@@ -40,6 +42,7 @@ jobs:
         run: |
           python3 scripts/test-dispatch-cli.py
           python3 scripts/test-queue-cli.py
+          python3 scripts/test-github-controller.py
       - run: cargo run --locked -- schemas --output schemas
       - run: git diff --exit-code -- schemas
       - name: Load independent plugin consumer

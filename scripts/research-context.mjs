@@ -95,3 +95,10 @@ export async function buildResearchContext({root,repo,state,goal,cfg,beforeSeque
  if(Buffer.byteLength(text)>maxBytes)throw Error('Context exceeds admission budget');
  return {text,provenance:{version:1,base,goal_sha256:digest(JSON.stringify(goal)),sources,context_sha256:digest(text),legacy_continuation_ignored:true,verification_contract_sha256:contract?digest(contract):null}};
 }
+
+export function commitSubject(cfg,goal,sequence){
+ const title=cfg.commit_subject;
+ if(title===undefined)return goal.id+' research cycle '+sequence+' (independent verification required)';
+ if(typeof title!=='string'||!title.trim()||title.length>180||/[\r\n\x00-\x1f\x7f]/.test(title))throw Error('Invalid approved product commit subject');
+ return title;
+}
