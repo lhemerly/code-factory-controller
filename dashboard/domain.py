@@ -281,7 +281,7 @@ def build_time(cycles: list[dict], status: dict | None, as_of: dt.datetime) -> d
     first_start = min(starts) if starts else None
     elapsed = (as_of - first_start).total_seconds() if first_start else None
     waiting = None
-    note = "active = recorded cycle start→end intervals; waiting = elapsed since first cycle − active"
+    note = "active = completed cycle intervals plus the current owned cycle through as-of time (including provider/tool waits); waiting = elapsed since first cycle − active"
     if elapsed is not None:
         waiting = elapsed - active
         if waiting < 0:
