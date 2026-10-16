@@ -33,6 +33,12 @@ python3 scripts/github-review.py status --state /private/review
 python3 scripts/github-review.py publish --state /private/review --batch <id>
 ```
 
+`reconcile --manifest /approved/launch.json --queue /private/queue` performs one
+complete operator pass: direct intake/admission, or receipt audit/publication once
+the existing queued repair finishes. Existing authorized supervision can invoke it;
+it does not start its own polling loop. Only one repair batch per bound PR can be
+queued at a time.
+
 `--node /absolute/node` selects an already installed runtime. `hold` blocks new
 repair admissions and publication; `resume` lifts that hold. Holds do not kill
 healthy active work. The existing dispatcher owns execution and slot fairness.

@@ -98,6 +98,11 @@ class Tests(unittest.TestCase):
  def test_held_enqueue_no_execution(self):
   key=self.adapter.ingest();self.adapter.hold(True)
   with self.assertRaises(ValueError):self.adapter.enqueue(key,'/unused','/unused')
+ def test_reconcile_hold_and_queued_do_not_duplicate_work(self):
+  self.adapter.hold(True);self.assertEqual(self.adapter.reconcile(None,None)['state'],'held');self.adapter.hold(False);key=self.batch();self.assertEqual(self.adapter.reconcile(None,None)['state'],'queued')
+ def test_second_batch_cannot_compete_for_same_pr(self):
+  self.batch();self.remote.data['comments'][0]['body']='New review';key=self.adapter.ingest()
+  with self.assertRaises(ValueError):self.adapter.enqueue(key,None,None)
  def test_real_git_fast_forward_rejects_divergence(self):
   import subprocess
   root=pathlib.Path(self.tmp.name);repo=root/'git';remote=root/'remote.git';repo.mkdir()

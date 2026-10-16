@@ -97,6 +97,7 @@ class Adapter:
   if s['hold']:raise ValueError('Publication/repair hold active')
   identity(self.gh.snapshot(b),b,batch['head'])
   if batch['status']!='ingested':return batch
+  if any(v['status']=='queued' for v in s['batches'].values()):raise ValueError('Existing review repair owns this PR; wait for its outcome')
   # Materialize a new isolated goal per review batch; use the existing native queue.
   D.queue_api.pins(b['seed_pins'])
   seed=pathlib.Path(b['execution_seed']);runroot=self.root/'runs'/key[:16]
@@ -154,6 +155,24 @@ class Adapter:
   checks=record['acceptance']['active_verification_receipt']['environment']['checks']
   body+='\n\nVerified checks: '+', '.join(str(c.get('check_id'))+' ('+str(c.get('observations',{}).get('executed','count unavailable'))+' executed)' for c in checks)+'.'
   return repo,commit,body
+ def reconcile(self,manifest_path,queue_path):
+  """One operator tick; existing supervision may call it without relaying review text."""
+  s=self.state()
+  if s['hold']:return {'state':'held'}
+  active=[v for v in s['batches'].values() if v['status']=='queued']
+  if active:
+   batch=active[0];path=pathlib.Path(batch['root'])/'status.json'
+   if not path.exists():return {'state':'queued','batch':batch['id']}
+   status=read(path)
+   if status.get('current'):return {'state':'running','batch':batch['id']}
+   if status.get('last_cycle',{}).get('status')=='accepted':return self.publish(batch['id'])
+   return {'state':'needs_attention','batch':batch['id'],'reason':'Repair lacks an accepted terminal receipt; retain existing evidence'}
+  key=self.ingest()
+  if key:return self.enqueue(key,manifest_path,queue_path)
+  # A prior preparation or interrupted enqueue may already have ingested a batch.
+  for batch in self.state()['batches'].values():
+   if batch['status']=='ingested' and batch['head']==self.state()['head']:return self.enqueue(batch['id'],manifest_path,queue_path)
+  return {'state':'idle'}
  def publish(self,key):
   s=self.state();b=s['binding'];batch=s['batches'][key]
   if s['hold']:raise ValueError('Publication hold active')
@@ -180,12 +199,13 @@ class Adapter:
   return s['publication']
 
 def main():
- p=argparse.ArgumentParser();p.add_argument('action',choices=['bind','ingest','enqueue','publish','hold','resume','status']);p.add_argument('--state',type=pathlib.Path,required=True);p.add_argument('--node',default='node');p.add_argument('--input',type=pathlib.Path);p.add_argument('--batch');p.add_argument('--manifest',type=pathlib.Path);p.add_argument('--queue',type=pathlib.Path);a=p.parse_args();adapter=Adapter(a.state,GitHub(a.node))
+ p=argparse.ArgumentParser();p.add_argument('action',choices=['bind','ingest','enqueue','publish','hold','resume','status','reconcile']);p.add_argument('--state',type=pathlib.Path,required=True);p.add_argument('--node',default='node');p.add_argument('--input',type=pathlib.Path);p.add_argument('--batch');p.add_argument('--manifest',type=pathlib.Path);p.add_argument('--queue',type=pathlib.Path);a=p.parse_args();adapter=Adapter(a.state,GitHub(a.node))
  with adapter.locked():
   if a.action=='bind':out=adapter.bind(read(a.input))
   elif a.action=='ingest':out={'batch':adapter.ingest()}
   elif a.action=='enqueue':out=adapter.enqueue(a.batch,a.manifest,a.queue)
   elif a.action=='publish':out=adapter.publish(a.batch)
+  elif a.action=='reconcile':out=adapter.reconcile(a.manifest,a.queue)
   elif a.action in ['hold','resume']:adapter.hold(a.action=='hold');out={'hold':a.action=='hold'}
   else:
    s=adapter.state();out={'head':s['head'],'hold':s['hold'],'batches':s['batches'],'publication':s['publication']}
