@@ -44,7 +44,7 @@ export function approvedScope(paths, template) {
 
 export function researchContinuation(out) {
   const next='Continue useful research toward the standing scientific objective. Run a defensible experiment or negative control, choose another method when the previous result is inconclusive, and retain exact evidence and actionable missing inputs. Do not repeat a cosmetic documentation patch or treat prose/software checks as a clear scientific win. Preserve frozen tests; place new tests under approved tests/ paths.';
-  if(out.scientific_blocker)return next+' Worker-reported limitation (unverified): '+out.scientific_blocker.slice(0,1200);
-  if(out.status==='accepted')return next+' Prior milestone next step: '+(out.continuation??'Inspect accumulated evidence and choose the next useful step.').slice(-1500);
-  return next+' Prior failed/inconclusive attempt: '+String(out.error??'No independently accepted outcome').slice(0,1700)+'. Any retained candidate is unaccepted repair input.';
+  // Compatibility helper only; admission now uses research-context.mjs and independently inspected receipts.
+  // Never carry worker prose, serialized errors or Markdown tail slices forward as instructions.
+  return next+(out.status==='accepted'?' Prior software milestone requires fresh context before continuing.':' Any retained candidate is unaccepted repair input.');
 }
