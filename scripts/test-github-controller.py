@@ -7,11 +7,14 @@ class ControllerBoundary(unittest.TestCase):
   self.temp=tempfile.TemporaryDirectory();self.root=pathlib.Path(self.temp.name);self.goal=self.root/'goal';repo=self.goal/'repository';repo.mkdir(parents=True)
   (repo/'README.md').write_text(json.dumps({'summary':['Product fixture'],'limitations':['Synthetic software proof only.']}))
   for args in [['init','-q'],['add','.'],['-c','core.hooksPath=/dev/null','-c','user.name=Fixture','-c','user.email=fixture@localhost','commit','-qm','baseline']]:subprocess.run(['git','-C',str(repo),*args],check=True)
-  base=M.git(repo,'rev-parse','HEAD');goal={'id':'review-fixture','objective':'Adapter fixture, no actual research','completion_criteria':['Fixture output'],'pause_conditions':['Uncertain execution']};M.save(self.goal/'goal.json',goal)
+  base=M.git(repo,'rev-parse','HEAD');pr_base=base
+  if self._testMethodName=='test_scoped_repair_descendant_can_publish':
+   subprocess.run(['git','-C',str(repo),'-c','core.hooksPath=/dev/null','-c','user.name=Fixture','-c','user.email=fixture@localhost','commit','--allow-empty','-qm','scoped repair input'],check=True);base=M.git(repo,'rev-parse','HEAD')
+  goal={'id':'review-fixture','objective':'Adapter fixture, no actual research','completion_criteria':['Fixture output'],'pause_conditions':['Uncertain execution']};M.save(self.goal/'goal.json',goal)
   binary=S.parent/'target/debug/code-factory-controller';subprocess.run([os.sys.executable,str(S/'fake-research-cycle.py'),str(self.goal)],check=True,capture_output=True,env={**os.environ,'FACTORY_FIXTURE_CONTROLLER':str(binary)})
-  cfg={'controller':str(binary)};M.save(self.goal/'supervisor.json',cfg);M.save(self.goal/'envelope.json',{'trusted_files':{str(self.goal/'supervisor.json'):M.sha(self.goal/'supervisor.json')}})
+  cfg={'controller':str(binary)};M.save(self.goal/'supervisor.json',cfg);M.save(self.goal/'job-template.json',{'base_commit':pr_base});M.save(self.goal/'envelope.json',{'trusted_files':{str(p):M.sha(p) for p in [self.goal/'supervisor.json',self.goal/'job-template.json']}})
   self.result=self.goal/'cycles/1/result.json';out=M.read(self.result);out['base']=base;M.save(self.result,out)
-  self.remote=suite.Remote();self.remote.data=suite.snapshot(base);self.adapter=M.Adapter(self.root/'adapter',self.remote);b=suite.binding();b.update(expected_head=base,allowed_paths=['result.txt'],protected_paths=['README.md']);b['publication']['summary_path']='README.md';self.adapter.bind(b);self.key=self.adapter.ingest();s=self.adapter.state();s['batches'][self.key].update(root=str(self.goal),status='queued');self.adapter.persist(s)
+  self.remote=suite.Remote();self.remote.data=suite.snapshot(pr_base);self.adapter=M.Adapter(self.root/'adapter',self.remote);b=suite.binding();b.update(expected_head=pr_base,allowed_paths=['result.txt'],protected_paths=['README.md']);b['publication']['summary_path']='README.md';self.adapter.bind(b);self.key=self.adapter.ingest();s=self.adapter.state();s['batches'][self.key].update(root=str(self.goal),status='queued');self.adapter.persist(s)
  def test_actual_queue_enrollment_is_scoped_and_replay_safe(self):
   seed=self.root/'seed';seed.mkdir();(seed/'trusted').mkdir();(seed/'trusted/check.py').write_text('print("fixture")')
   binary=S.parent/'target/debug/code-factory-controller';cfg={'native':'fixture-only','native_sha256':'fixture-only','controller':str(binary),'controller_sha256':M.sha(binary),'plugin':'fixture-only','plugin_commit':'fixture-only','venv':'fixture-only','path':'/usr/bin','ownership_lease_seconds':3600,'ownership_heartbeat_seconds':60,'integration_ref':'refs/heads/review-fixture','profiles':[{'id':'fixture','version':'1','timeout_seconds':30,'checks':[{'id':'result','argv':['/usr/bin/true']}]}]}
@@ -31,6 +34,8 @@ class ControllerBoundary(unittest.TestCase):
  def tearDown(self):self.temp.cleanup()
  def test_actual_receipt_publishes_and_restart_deduplicates(self):
   result=self.adapter.publish(self.key);self.assertEqual(result['state'],'confirmed');self.adapter.publish(self.key);self.assertEqual(len(self.remote.pushes),1)
+ def test_scoped_repair_descendant_can_publish(self):
+  result=self.adapter.publish(self.key);self.assertEqual(result['state'],'confirmed');self.assertEqual(len(self.remote.pushes),1)
  def test_pr_counts_come_from_authoritative_receipt(self):
   out=M.read(self.result);out['acceptance']['active_verification_receipt']['environment']['checks'][0]['observations']={'executed':99999};M.save(self.result,out)
   self.adapter.publish(self.key);self.assertNotIn('99999',self.remote.bodies[-1])

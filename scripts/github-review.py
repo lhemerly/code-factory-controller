@@ -139,7 +139,9 @@ class Adapter:
   D.Dispatcher.audit_cycle(dispatcher,{'id':record['goal_id']},record)
   authoritative=D.inspect_job(cfg['controller'],pathlib.Path(record['_result_path']).parent/'controller.json',record['job_id'])
   commit=record['acceptance']['integrated_commit'];repo=root/'repository'
-  if record['base']!=batch['head'] or record['goal_id']!=read(root/'goal.json')['id']:raise ValueError('Receipt does not bind this review goal/head')
+  if read(root/'job-template.json')['base_commit']!=batch['head'] or record['goal_id']!=read(root/'goal.json')['id']:raise ValueError('Receipt does not bind this review goal/head')
+  git(repo,'merge-base','--is-ancestor',batch['head'],record['base'])
+  git(repo,'merge-base','--is-ancestor',record['base'],commit)
   git(repo,'merge-base','--is-ancestor',batch['head'],commit)
   paths=git(repo,'diff','--name-only',batch['head'],commit).splitlines();scoped(paths,b)
   # Check all project-facing text, including inherited narrative, not only changed docs.
