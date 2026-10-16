@@ -44,6 +44,7 @@ test('inconclusive science, worker blocker prose and rejected candidates request
   const next=researchContinuation(out);assert.match(next,/Continue useful research/);assert.match(next,/negative control/);assert.match(next,/not repeat a cosmetic/);
  }
  assert.match(researchContinuation({status:'failed'}),/unaccepted repair input/);
+ assert.doesNotMatch(researchContinuation({status:'accepted',continuation:'STALE DIRECTIVE',scientific_blocker:'UNVERIFIED CLAIM'}),/STALE DIRECTIVE|UNVERIFIED CLAIM/);
 });
 
 test('genuine permission and ownership denial never become scientific repair or provider fallback',()=>{for(const error of ['PermissionDeniedError','permission denied','requires approval','scope violation','ownership changed','V2 active or unknown shell work'])assert.equal(classify(error,'verification'),'blocked')});

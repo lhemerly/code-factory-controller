@@ -6,9 +6,10 @@ import {resolve,dirname} from 'node:path';
 import {createHash,randomBytes} from 'node:crypto';
 import {createServer} from 'node:net';
 import {OpenCode} from './opencode-v2-client.mjs';
+import {buildResearchContext,createCycleDirectory} from './research-context.mjs';
 import {OwnershipLease,observeResearch,awaitNativeShells} from './continuous-ownership.mjs';
 import {sandbox} from './spark-sandbox.mjs';
-import {freeModels,classify,route,failure,recoveryAction,replacementAllowed,approvedScope,researchContinuation} from './free-model-policy.mjs';
+import {freeModels,classify,route,failure,recoveryAction,replacementAllowed,approvedScope} from './free-model-policy.mjs';
 const oneCycle=process.argv.includes('--one-cycle');
 const root=resolve(process.argv[2]),cfg=JSON.parse(await readFile(resolve(root,'supervisor.json')));
 const goal=JSON.parse(await readFile(resolve(root,'goal.json'))),repo=resolve(root,'repository');
@@ -46,7 +47,7 @@ const port=()=>new Promise(ok=>{const s=createServer();s.listen(0,'127.0.0.1',()
 function safe(v){if(Array.isArray(v))return v.filter(x=>!['thinking','reasoning'].includes(x?.type)).map(safe);if(v&&typeof v==='object')return Object.fromEntries(Object.entries(v).filter(([k,x])=>!(['thinking','reasoning'].includes(k)&&typeof x!=='number')).map(([k,x])=>[k,safe(x)]));return v}
 
 async function runCycle(sequence){
- const dir=resolve(root,'cycles',String(sequence).padStart(6,'0'));await mkdir(dir,{recursive:true,mode:0o700});const profile=resolve(dir,'native');await mkdir(profile,{mode:0o700});
+ const dir=await createCycleDirectory(root,sequence);const profile=resolve(dir,'native');await mkdir(profile,{mode:0o700});
  for(const d of ['home','config','data','cache','state'])await mkdir(resolve(profile,d),{mode:0o700});
  const nativeEnv={...env,HOME:resolve(profile,'home'),XDG_CONFIG_HOME:resolve(profile,'config'),XDG_DATA_HOME:resolve(profile,'data'),XDG_CACHE_HOME:resolve(profile,'cache'),XDG_STATE_HOME:resolve(profile,'state')};
  const operator=randomBytes(32).toString('hex'),worker=randomBytes(32).toString('hex');let password='',native,controller,client,child,parent,work,job,lease,phase='catalog';
@@ -75,11 +76,10 @@ async function runCycle(sequence){
   controller=(await launch(cfg.controller,['serve','--config',resolve(dir,'controller.json'),'--listen',new URL(controllerURL).host],{...env,FACTORY_OPERATOR_TOKEN:operator},repo,o=>o.includes('controller listening on')?{}:undefined)).p;
   // Controller native auth is supplied after native start below, before binding.
   const standing=await op('standing-goal',{goal});out.standing_goal=standing;
-  const goalText=goal.objective+' Completion criteria: '+goal.completion_criteria.join(' ');
-  const continuation=state.continuation??cfg.initial_continuation??'First reproduce and fix the known imported lamina CPU failure without weakening the frozen tests; investigate the unsupported-neighbor normal/slab contamination and sampling-dependent anisotropy using counterexamples. Start with one defensible bounded change.';
-  const task=(await readFile(resolve(root,'task.txt'),'utf8'))+'\nSTANDING GOAL: '+goalText+'\nNEXT: '+continuation.slice(0,2400);
-  out.task=task;
-  const template=JSON.parse(await readFile(resolve(root,'job-template.json')));await op('admit',{...template,job_id:job,base_commit:state.base,task_brief:task.slice(0,7900)});
+  const admissionContext=await buildResearchContext({root,repo,state,goal,cfg,beforeSequence:sequence});
+  const task=admissionContext.text;out.task=task;out.context_provenance=admissionContext.provenance;
+  await atomic(resolve(dir,'research-context.json'),admissionContext);
+  const template=JSON.parse(await readFile(resolve(root,'job-template.json')));await op('admit',{...template,job_id:job,base_commit:state.base,task_brief:task});
   const prepared=await op('prepare',{mode:'opencode_v2'});work=prepared.attempt.worktree;out.worktree=work;out.attempt=prepared.attempt.attempt_id;out.git_control_sha256=sha(await readFile(resolve(work,'.git')));lease=new OwnershipLease(()=>op('heartbeat',{attempt_id:out.attempt}),{intervalMs:cfg.ownership_heartbeat_seconds*1000}).start();await lease.tick(true);await cycleSave();
   if(git(work,'rev-parse','--show-toplevel')!==work)throw Error('Worker directory is not actual codebase root');
   await symlink(cfg.venv,resolve(work,'.venv'));await symlink(cfg.data,resolve(work,'data'));await mkdir(resolve(work,'.opencode/pstack-admission'),{recursive:true});
@@ -126,8 +126,6 @@ async function runCycle(sequence){
   if(done?.state!=='done'||done.active_verification_receipt?.outcome!=='passed')throw Error('Independent integration incomplete');
   if(sha(await readFile(done.delivery.destination))!==done.delivery.sha256)throw Error('Delivered archive hash mismatch');
   out.acceptance=done;out.status='accepted';await atomic(resolve(dir,'accepted.json'),done);
-  // Read continuation as worker-authored planning evidence, never as an acceptance receipt.
-  try{out.continuation=(await readFile(resolve(work,'docs/CONTINUATION.md'),'utf8')).slice(-2400)}catch{}
   try{out.scientific_blocker=(await readFile(resolve(work,'docs/BLOCKED.md'),'utf8')).slice(0,4000)}catch{}
  }catch(e){out.error=red(String(e)).slice(0,20000);out.failure_kind=out.error.includes('scope violation')?'blocked':classify(out.error,phase);out.status='failed';}
  finally{
@@ -172,7 +170,7 @@ if(state.current){
   const endpoint='http://127.0.0.1:'+await port();const p=spawn(cfg.controller,['serve','--config',resolve(state.current.directory,'controller.json'),'--listen',new URL(endpoint).host],{cwd:repo,env:{...env,FACTORY_OPERATOR_TOKEN:privateState.operator,FACTORY_OPENCODE_PASSWORD:privateState.password},stdio:'ignore'});
   let saved;try{for(let i=0;i<100;i++){try{const r=await fetch(endpoint+'/operator/status',{method:'POST',headers:{authorization:'Bearer '+privateState.operator,'content-type':'application/json'},body:JSON.stringify({job_id:prior.job_id}),signal:AbortSignal.timeout(1000)});if(r.ok){saved=await r.json();break}}catch{}await delay(100)}
    if(saved?.state!=='done'||saved.integrated_commit!==prior.acceptance.integrated_commit||saved.active_verification_receipt?.verification_id!==prior.acceptance.active_verification_receipt.verification_id||sha(await readFile(saved.delivery.destination))!==saved.delivery.sha256)throw Error('Recovered acceptance mismatch');
-   state.base=saved.integrated_commit;if(!state.accepted.some(a=>a.job===prior.job_id))state.accepted.push({job:prior.job_id,commit:state.base,receipt:saved.active_verification_receipt.verification_id});state.continuation=prior.continuation;await event('acceptance_recovered',{job:prior.job_id,commit:state.base});
+   state.base=saved.integrated_commit;if(!state.accepted.some(a=>a.job===prior.job_id))state.accepted.push({job:prior.job_id,commit:state.base,receipt:saved.active_verification_receipt.verification_id});delete state.continuation;await event('acceptance_recovered',{job:prior.job_id,commit:state.base});
   }finally{p.kill('SIGTERM');await new Promise(ok=>p.once('exit',ok))}
  }
 }
@@ -182,7 +180,7 @@ if(cfg.resume_checkpoint&&!state.source_resume){
  if(state.sequence!==checkpoint.source_cycle||state.base!==checkpoint.prior_base||checkpoint.acceptance!=='none'||checkpoint.accounting!=='unknown')throw Error('Stopped checkpoint resume context changed; inspect before activation');
  for(const [path,digest] of Object.entries(checkpoint.files))if(sha(execFileSync('/usr/bin/git',['-C',repo,'show',checkpoint.commit+':'+path]))!==digest)throw Error('Stopped checkpoint content changed');
  state.base=checkpoint.commit;state.source_resume={...checkpoint,applied_utc:now()};
- state.continuation='Resume the explicitly UNACCEPTED stopped research checkpoint. Its original model output reported 100 tests (97 passed, 3 GPU skips), but no independent controller receipt exists and its interrupted message accounting remains unknown. Review the exact geometry change and new regressions, fix limitations, document evidence and continue the full-scroll goal. The former host execution timer is removed.';
+ delete state.continuation;
  await persist();await event('unaccepted_checkpoint_resumed',{commit:checkpoint.commit,acceptance:'none',prior_accounting:'unknown'});
 }
 if(state.status==='paused')await pause(state.pause_reason??'Operator review required');
@@ -193,7 +191,7 @@ while(!shutdown){
  state.sequence++;state.status='running';await persist();const out=await runCycle(state.sequence);
  if(out.status==='accepted'||out.status==='all_free_unavailable'||replacementAllowed(out))state.current=null;state.last_cycle={sequence:out.sequence,status:out.status,result:resolve(root,'cycles',String(out.sequence).padStart(6,'0'),'result.json')};
  if(out.status==='accepted'){
-  state.base=out.acceptance.integrated_commit;state.accepted.push({job:out.job_id,commit:state.base,receipt:out.acceptance.active_verification_receipt.verification_id});state.repair_count=0;state.continuation=researchContinuation(out);await event('accepted',{sequence:out.sequence,commit:state.base,goal_status:'unresolved'});if(out.scientific_blocker){state.continuation=researchContinuation(out);await event('scientific_limitation',{sequence:out.sequence,claim:out.scientific_blocker.slice(0,1200),goal_status:'unresolved'});}
+  state.base=out.acceptance.integrated_commit;state.accepted.push({job:out.job_id,commit:state.base,receipt:out.acceptance.active_verification_receipt.verification_id});state.repair_count=0;delete state.continuation;await event('accepted',{sequence:out.sequence,commit:state.base,goal_status:'unresolved'});if(out.scientific_blocker){delete state.continuation;await event('scientific_limitation',{sequence:out.sequence,claim:out.scientific_blocker.slice(0,1200),goal_status:'unresolved'});}
  }else if(out.status==='all_free_unavailable'){
   state.status='all_free_unavailable';state.next_check_utc=new Date(Date.now()+cfg.unavailable_backoff_seconds*1000).toISOString();await persist();await event('all_free_unavailable',{reason:'No advertised compatible free model outside open circuits; bounded catalog recheck'});
   if(oneCycle)break;
@@ -205,12 +203,12 @@ while(!shutdown){
   if(!replacementAllowed(out)){await pause('Execution/recovery evidence incomplete: '+(out.error??'unknown'));break}
   const stop=out.recovery.execution_stop;const confirmed=stop==='confirmed'||stop?.status==='confirmed';
   if(!confirmed){await pause('Controller could not positively confirm native execution stopped: '+JSON.stringify(stop));break}
-  if(['denied','unavailable','transient'].includes(out.failure_kind)){if(out.checkpoint){state.base=out.checkpoint;state.continuation='Continue the unaccepted stopped checkpoint, inspect docs/FACTORY-RECOVERY.md, repair before claiming results. The prior provider failed; no candidate was accepted.'}state.circuits=failure(state.circuits,out.model,out.failure_kind,Date.now());await event('model_circuit',{model:out.model,failure_kind:out.failure_kind,usage:out.usage??null});}
+  if(['denied','unavailable','transient'].includes(out.failure_kind)){if(out.checkpoint){state.base=out.checkpoint;delete state.continuation;}state.circuits=failure(state.circuits,out.model,out.failure_kind,Date.now());await event('model_circuit',{model:out.model,failure_kind:out.failure_kind,usage:out.usage??null});}
   else if(out.failure_kind==='repair'){
    state.repair_count++;
    // Retain unaccepted candidate as repair input, not as an accepted/integrated milestone.
    if(out.checkpoint||(out.candidate&&out.scope_approved))state.base=out.checkpoint??out.candidate;
-   state.continuation=researchContinuation(out);
+   delete state.continuation;
    await event('repair_required',{sequence:out.sequence,model:out.model,candidate:out.candidate??null});
   }else{await pause(out.error??'Unknown non-provider failure');break}
  }
