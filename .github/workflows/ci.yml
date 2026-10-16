@@ -1,7 +1,7 @@
 name: Verify controller
 on:
   push:
-    branches: [main]
+    branches: [main, "factory/**"]
   pull_request:
 permissions:
   contents: read
@@ -26,9 +26,17 @@ jobs:
         run: python3 -m unittest dashboard.tests.test_current_state dashboard.tests.test_fixtures dashboard.tests.test_loader_safety dashboard.tests.test_server dashboard.tests.test_state_root
       - run: python3 scripts/test-research-dispatch.py
       - run: python3 scripts/test-dispatch-queue.py
+      - run: python3 scripts/test-queue-handoff.py
+      - run: python3 scripts/test-github-review.py
+      - run: python3 scripts/test-main-publication.py
+      - run: node --experimental-strip-types scripts/test-pstack-github.mjs
       - run: node scripts/test-continuous-ownership.mjs
       - run: node scripts/test-free-model-policy.mjs
       - run: node scripts/test-research-context.mjs
+      - run: node scripts/test-native-plugin-readiness.mjs
+      - run: node scripts/test-native-plugin-readiness-recovery.mjs
+      - run: node scripts/test-native-plugin-readiness-failclosed.mjs
+      - run: node scripts/test-native-session-inventory.mjs
       - name: Test local Bonsai OpenCode transport (mock inference only)
         run: |
           npm install --ignore-scripts --no-audit --no-fund --prefix "$RUNNER_TEMP/bonsai-runtime" opencode-linux-x64-baseline@1.19.0
@@ -40,7 +48,13 @@ jobs:
       - name: Exercise two-goal owner CLI (fake providers, real verification)
         run: |
           python3 scripts/test-dispatch-cli.py
+          python3 scripts/test-goal-feedback-cli.py
+          FACTORY_FIXTURE_TEST_HOST_EXIT=1 python3 scripts/test-goal-feedback-cli.py
+          python3 scripts/test-goal-process-lifecycle.py
+          python3 scripts/test-goal-baseline-cli.py
           python3 scripts/test-queue-cli.py
+          python3 scripts/test-github-controller.py
+          python3 scripts/test-main-controller.py
       - run: cargo run --locked -- schemas --output schemas
       - run: git diff --exit-code -- schemas
       - name: Load independent plugin consumer

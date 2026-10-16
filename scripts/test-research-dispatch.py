@@ -23,6 +23,27 @@ class Fixture(unittest.TestCase):
   d=self.manager();[d.step() for _ in range(4)];self.assertEqual(self.calls,['scroll','ink','scroll','ink']);self.assertTrue(all(s['state']=='ready' for s in d.s['goals'].values()));self.assertIsNone(d.s['goals']['ink']['usage']['tokens']['cache']['write'])
  def test_reopen_continues_cursor_without_duplicate_dispatch(self):
   d=self.manager();d.step();d=self.manager();d.recover();d.step();self.assertEqual(self.calls,['scroll','ink'])
+ def publication_fixture(self,passed=True):
+  binding=self.root/'publication-binding.json';D.save(binding,{'require_goal_completion':True});self.m['main_publication']={'scroll':{'binding':str(binding)}}
+  stdout=self.root/'whole-goal.json';stdout.write_text('{}')
+  result={'passed':passed,'status':'passed' if passed else 'acceptance_failed','commit':'a'*40,'receipts':[{'stdout':str(stdout),'stdout_sha256':hashlib.sha256(stdout.read_bytes()).hexdigest()}]}
+  d=self.manager(complete=lambda *_:result);d.publish_goal=lambda g:{'state':'awaiting_ci'};return d,stdout
+ def test_publication_wait_restart_does_not_dispatch_another_coding_cycle(self):
+  d,_=self.publication_fixture();d.step();self.assertEqual(d.s['goals']['scroll']['state'],'publishing');self.assertEqual(self.calls,['scroll'])
+  d=self.manager();d.s['goals']['ink']['state']='paused';d.persist();d.publish_goal=lambda g:{'state':'confirmed'}
+  self.clock=30;d.recover_and_audit();d.step();self.assertEqual(self.calls,['scroll']);self.assertEqual(d.s['goals']['scroll']['state'],'complete');self.assertIsNone(d.s['current'])
+ def test_publication_crash_reconciles_intent_without_duplicate_coding(self):
+  d,_=self.publication_fixture();d.step();d.s['current']={'goal':'scroll','index':0,'phase':'publication'};d.persist()
+  d=self.manager();d.publish_goal=lambda g:{'state':'confirmed'};d.recover_and_audit()
+  self.assertEqual(self.calls,['scroll']);self.assertEqual(d.s['goals']['scroll']['state'],'complete');self.assertIsNone(d.s['current'])
+ def test_failed_whole_goal_never_invokes_publication(self):
+  d,_=self.publication_fixture(passed=False);d.publish_goal=lambda g:self.fail('Incomplete goal must not upload');d.step()
+  self.assertEqual(d.s['goals']['scroll']['state'],'ready');self.assertEqual(self.calls,['scroll'])
+ def test_tampered_goal_evidence_blocks_publication_recovery(self):
+  d,stdout=self.publication_fixture();d.step();d.s['current']={'goal':'scroll','index':0,'phase':'publication'};d.persist();stdout.write_text('changed')
+  d=self.manager();d.publish_goal=lambda g:self.fail('Tampered evidence must not upload')
+  with self.assertRaisesRegex(RuntimeError,'evidence changed'):d.recover_and_audit()
+  self.assertEqual(self.calls,['scroll']);self.assertEqual(d.s['status'],'needs_attention')
  def test_recover_completed_host_handoff_uses_existing_result_not_new_cycle(self):
   d=self.manager();g=self.goals[0];record={'goal':g['id'],'index':0,'expected_sequence':1,'phase':'running'};d.s['current']=record;d.persist();self.fake(g,record);self.calls=[];d=self.manager();d.recover();self.assertEqual(self.calls,[]);self.assertEqual(d.s['cursor'],1);self.assertEqual(len(d.s['goals']['scroll']['milestones']),1)
  def test_uncertain_restart_is_fenced_without_dispatch(self):
@@ -72,7 +93,8 @@ class Fixture(unittest.TestCase):
   def audit(goal,out):return {'job':out['job_id'],'commit':commit,'receipt':'fake-provider-controller-receipt','result':out['_result_path']}
   d=self.manager(audit=audit,complete=None)
   # Use the real clean-checkout acceptance implementation rather than the default stub.
-  d.complete=d.complete_goal;d.step();gs=d.s['goals']['scroll'];self.assertEqual(gs['state'],'complete')
+  d.complete=lambda goal,milestone:D.acceptance.run_acceptance({**goal['acceptance'],'repository':goal['repository']},self.path.parent/'legacy-goal',milestone['commit'])
+  d.step();gs=d.s['goals']['scroll'];self.assertEqual(gs['state'],'complete')
   receipt=gs['goal_acceptance']['receipts'][0];self.assertEqual(receipt['exit_status'],0)
   pathlib.Path(receipt['stdout']).write_text('forged')
   with self.assertRaisesRegex(RuntimeError,'changed'):d.audit_completed()
@@ -133,4 +155,69 @@ class Fixture(unittest.TestCase):
   g=self.goals[0];out={'goal_id':'scroll','status':'failed','cleanup_confirmed':True,'job_id':'stopped','_result_path':str(self.root/'result.json'),'recovery':{'stop_id':'claimed-stop','execution_stop':{'status':'confirmed'},'accounting':{'status':'unknown'}}}
   controller=self.root/'inspector';controller.write_text('#!/usr/bin/python3\nimport json\nprint(json.dumps({"execution_recovery":{"stop_id":"different-stop","execution_stop":{"status":"confirmed"},"accounting":{"status":"settled_zero"}}}))\n');controller.chmod(0o700);self.m['controller']=str(controller);d=self.manager()
   with self.assertRaisesRegex(RuntimeError,'exact failed-attempt stop'):d.audit_cycle(g,out)
+ def test_goal_failure_is_saved_before_next_cycle_and_survives_dispatcher_restart(self):
+  result={'passed':False,'status':'acceptance_failed','commit':'a'*40,'reason':'Missing approved behavior','receipts':[]}
+  d=self.manager(complete=lambda g,m:result);d.step()
+  feedback=json.loads((pathlib.Path(self.goals[0]['root'])/'goal-evaluation.json').read_text())
+  self.assertEqual(feedback['result'],result);self.assertEqual(feedback['goal_id'],'scroll')
+  self.assertEqual(feedback['milestone_receipt'],'fixture-scroll-1');self.assertEqual(d.s['goals']['scroll']['state'],'ready')
+  self.assertEqual(self.manager().s['goals']['scroll']['goal_acceptance'],result)
+ def exit_script(self,terminal=True,cleanup=True):
+  goal=self.goals[0];script=self.root/'exit-cycle.py';root=pathlib.Path(goal['root'])
+  out={'goal_id':goal['id'],'sequence':1,'status':'accepted','cleanup_confirmed':cleanup,'job_id':'saved-before-exit'}
+  status={'sequence':1,'current':None,'status':'waiting','last_cycle':{'sequence':1,'result':str(root/'result.json')}}
+  script.write_text('import json,pathlib\n'+
+   (f'pathlib.Path({str(root/"result.json")!r}).write_text({json.dumps(out)!r})\npathlib.Path({str(root/"status.json")!r}).write_text({json.dumps(status)!r})\n' if terminal else '')+
+   'raise SystemExit(7)\n')
+  goal['cycle_command']=[sys.executable,str(script)]
+  return goal
+ def test_nonzero_host_exit_with_terminal_result_is_audited_without_operator_restart(self):
+  self.exit_script();d=self.manager();d.runner=d.run_cycle;d.pool_fds=()
+  d.step();self.assertIsNone(d.s['current']);self.assertEqual(d.s['goals']['scroll']['state'],'ready')
+  self.assertEqual(len(d.s['goals']['scroll']['milestones']),1)
+  self.assertEqual(d.s['goals']['scroll']['last_host_exit']['exit_status'],7)
+ def test_nonzero_host_exit_without_terminal_evidence_remains_fenced(self):
+  self.exit_script(terminal=False);d=self.manager();d.runner=d.run_cycle;d.pool_fds=()
+  with self.assertRaisesRegex(RuntimeError,'without a completed result'):d.step()
+  saved=json.loads(self.path.read_text());self.assertEqual(saved['status'],'needs_attention');self.assertEqual(saved['current']['exit_status'],7)
+ def test_terminal_file_after_host_crash_cannot_bypass_independent_audit(self):
+  self.exit_script();d=self.manager(audit=lambda *_:(_ for _ in ()).throw(RuntimeError('Controller receipt not confirmed')));d.runner=d.run_cycle;d.pool_fds=()
+  with self.assertRaisesRegex(RuntimeError,'receipt not confirmed'):d.step()
+  self.assertEqual(d.s['goals']['scroll']['state'],'paused');self.assertIsNotNone(d.s['current'])
+ def test_nonzero_exit_without_positive_cleanup_is_not_recovered(self):
+  self.exit_script(cleanup=False);d=self.manager();d.audit=d.audit_cycle;d.runner=d.run_cycle;d.pool_fds=()
+  with self.assertRaisesRegex(RuntimeError,'positive process cleanup'):d.step()
+  self.assertEqual(d.s['goals']['scroll']['state'],'paused')
+ def test_unresolved_independent_verifier_pauses_and_cannot_be_resumed_by_restart(self):
+  result={'passed':False,'status':'acceptance_failed','commit':'a'*40,'execution_unresolved':True,'receipts':[]}
+  d=self.manager(complete=lambda *_:result);d.step();self.assertEqual(d.s['goals']['scroll']['state'],'paused')
+  with self.assertRaisesRegex(RuntimeError,'verifier execution unresolved'):self.manager().recover_and_audit()
+ def test_late_supervisor_quiescence_rechecks_same_milestone_without_coding_dispatch(self):
+  result={'passed':False,'status':'acceptance_failed','commit':'a'*40,'execution_unresolved':True,'receipts':[]}
+  d=self.manager(complete=lambda *_:result);d.step();calls=list(self.calls)
+  record=pathlib.Path(str(self.path.parent/'scroll-goal')+'.acceptance')/'owned';record.mkdir(parents=True)
+  (record/'0.plan.json').write_text(json.dumps({'execution_id':'owned'}))
+  d=self.manager()
+  with self.assertRaises(FileNotFoundError):d.recover_and_audit()
+  (record/'0.process.json').write_text(json.dumps({'version':1,'execution_id':'owned','observer':'linux_subreaper_waitpid_pidfd','quiescent':True}))
+  d=self.manager(complete=lambda g,m:{'passed':False,'status':'acceptance_failed','commit':m['commit'],'receipts':[]})
+  d.recover_and_audit();self.assertEqual(self.calls,calls);self.assertEqual(d.s['goals']['scroll']['state'],'ready');self.assertEqual(len(d.s['goals']['scroll']['milestones']),1)
+ def test_approved_initial_base_is_evaluated_without_dispatching_coding(self):
+  self.goals[0]['initial_base']='a'*40
+  d=self.manager(complete=lambda g,m:{'passed':True,'status':'passed','commit':m['commit'],'receipts':[{'fixture_only':True}]})
+  d.step();self.assertEqual(self.calls,[]);self.assertEqual(d.s['goals']['scroll']['state'],'complete');self.assertEqual(d.s['goals']['scroll']['milestones'],[]);self.assertEqual(d.s['goals']['scroll']['completion_base'],'a'*40)
+ def test_baseline_failure_reaches_first_worker_and_recovery_does_not_duplicate_coding(self):
+  g=self.goals[0];g['initial_base']='a'*40;result={'passed':False,'status':'acceptance_failed','commit':'a'*40,'receipts':[]}
+  d=self.manager(complete=lambda *_:result);d.s['current']={'goal':g['id'],'index':0,'phase':'baseline_evaluation','commit':'a'*40};d.persist()
+  d=self.manager(complete=lambda *_:result);d.recover_and_audit();self.assertEqual(self.calls,[]);self.assertTrue(d.s['goals']['scroll']['baseline_evaluation']['finished'])
+  self.assertTrue(json.loads((pathlib.Path(g['root'])/'goal-evaluation.json').read_text())['baseline'])
+ def test_baseline_checks_honor_owner_pause_and_invalid_base(self):
+  g=self.goals[0];g['initial_base']='a'*40;(pathlib.Path(g['root'])/'PAUSE').write_text('Owner pause')
+  d=self.manager(complete=lambda *_:(_ for _ in ()).throw(AssertionError('must not evaluate')));d.step();self.assertEqual(d.s['goals']['scroll']['state'],'paused');self.assertEqual(self.calls,[])
+  g['initial_base']='main'
+  with self.assertRaisesRegex(ValueError,'exact commit'):self.manager()
+ def test_missing_baseline_verifier_prerequisites_pause_before_spending_worker_time(self):
+  self.goals[0]['initial_base']='a'*40
+  d=self.manager(complete=lambda *_:{'passed':False,'status':'acceptance_failed','phase':'setup','reason':'Missing Git','receipts':[]});d.step()
+  self.assertEqual(d.s['goals']['scroll']['state'],'paused');self.assertEqual(self.calls,[]);self.assertIn('Missing Git',d.s['goals']['scroll']['reason'])
 if __name__=='__main__':unittest.main(verbosity=2)

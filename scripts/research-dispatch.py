@@ -31,8 +31,20 @@ def merge_circuits(*sources):
 def migrate_launch_policy(manifest,state_path,migration_path):
  """Explicit owner repair of pinned implementation; goal/permission contracts stay exact."""
  state_path=pathlib.Path(state_path);state=json.loads(state_path.read_text());migration=json.loads(pathlib.Path(migration_path).read_text());previous=migration['previous_manifest']
- if migration.get('kind')!='lifecycle-recovery-repair' or migration.get('from')!=state['manifest_digest'] or digest(previous)!=migration['from'] or digest(manifest)!=migration.get('to'):raise ValueError('Repair migration identity mismatch')
- if {k:v for k,v in previous.items() if k not in ['controller','trusted_files']}!={k:v for k,v in manifest.items() if k not in ['controller','trusted_files']}:raise ValueError('Repair cannot change goals, scope, commands, pricing or acceptance contracts')
+ kind=migration.get('kind');publication=kind=='verified-main-publication'
+ if kind not in ['lifecycle-recovery-repair','verified-main-publication'] or migration.get('from')!=state['manifest_digest'] or digest(previous)!=migration['from'] or digest(manifest)!=migration.get('to'):raise ValueError('Repair migration identity mismatch')
+ allowed=['controller','trusted_files']+(['main_publication'] if publication else [])
+ if {k:v for k,v in previous.items() if k not in allowed}!={k:v for k,v in manifest.items() if k not in allowed}:raise ValueError('Repair cannot change goals, scope, commands, pricing or acceptance contracts')
+ if publication:
+  policies=manifest.get('main_publication',{});prior=previous.get('main_publication',{});goals={g['id']:g for g in manifest['goals']}
+  if not policies or any(k not in goals for k in policies) or any(policies.get(k)!=v for k,v in prior.items()):raise ValueError('Publication migration cannot add goals or replace existing bindings')
+  pub=module('main_policy','main-publication.py')
+  for goal_id,entry in policies.items():
+   goal=goals[goal_id];binding=queue_api.read(entry['binding']);template=queue_api.read(pathlib.Path(goal['root'])/'job-template.json')
+   if binding['goal_id']!=goal_id or pathlib.Path(binding['goal_root']).resolve()!=pathlib.Path(goal['root']).resolve() or binding['allowed_paths']!=template['allowed_paths'] or binding['protected_paths']!=template['protected_paths']:raise ValueError('Publication binding changes approved goal scope')
+   pub.identity(binding,{'repository':{'id':binding['repository_id'],'full_name':binding['repository'],'private':binding['private'],'default_branch':'main'},'head':binding['initial_head']})
+   for source in [entry['binding'],str(ROOT/'main-publication.py')]:
+    if manifest.get('trusted_files',{}).get(source)!=queue_api.sha(source):raise ValueError('Publication migration requires pinned binding/code')
  if state.get('current',{} ) and state['current'].get('process') and same_process(state['current']['process']):raise RuntimeError('Cannot migrate a live owner')
  for file,expected in manifest['trusted_files'].items():
   if hashlib.sha256(pathlib.Path(file).read_bytes()).hexdigest()!=expected:raise ValueError('Repair pin mismatch: '+file)
@@ -61,6 +73,12 @@ class Dispatcher:
    if hashlib.sha256(pathlib.Path(file).read_bytes()).hexdigest()!=expected:raise ValueError('Trusted launcher/verifier bytes changed: '+file)
   goals=manifest['goals'];ids=[g['id'] for g in goals]
   if not ids or len(set(ids))!=len(ids):raise ValueError('Goal IDs must be unique')
+  for goal in goals:
+   base=goal.get('initial_base')
+   if base is not None:
+    if not isinstance(base,str) or len(base)!=40 or any(c not in '0123456789abcdef' for c in base):raise ValueError('Initial goal evaluation requires an exact commit')
+    config=pathlib.Path(goal['root'])/'supervisor.json'
+    if config.exists() and json.loads(config.read_text()).get('initial_base')!=base:raise ValueError('Initial goal evaluation disagrees with approved cycle base')
   repos=[pathlib.Path(g['repository']).resolve() for g in goals];roots=[pathlib.Path(g['root']).resolve() for g in goals]
   if len(set(repos))!=len(repos) or len(set(roots))!=len(roots):raise ValueError('Goals must have distinct repositories and state roots')
   for a in [*repos,*roots]:
@@ -87,6 +105,12 @@ class Dispatcher:
   if record.get('process') and same_process(record['process']):raise RuntimeError('Existing cycle owner is alive; do not duplicate')
   goal=next(g for g in self.m['goals'] if g['id']==record['goal'])
   status=self.read_status(goal)
+  if record.get('phase')=='publication':
+   self.audit_completed();self.publication_tick(goal);self.s['cursor']=(record['index']+1)%len(self.m['goals']);self.s['current']=None;self.persist();return
+  if record.get('phase')=='baseline_evaluation':
+   if record.get('commit')!=goal.get('initial_base') or status.get('sequence',0)!=0 or status.get('current'):raise RuntimeError('Baseline evaluation recovery identity mismatch')
+   if status.get('status')=='paused' or (pathlib.Path(goal['root'])/'PAUSE').exists():raise RuntimeError('Owner pause prevents baseline evaluation recovery')
+   self.evaluate_baseline(goal);self.s['cursor']=(record['index']+1)%len(self.m['goals']);self.s['current']=None;self.persist();return
   if status.get('sequence')!=record['expected_sequence'] or status.get('current') or not status.get('last_cycle'):
    self.s['status']='needs_attention';self.persist();raise RuntimeError('Interrupted admission/cycle is uncertain; preserve evidence, no automatic dispatch')
   self.finish(goal,status);self.s['cursor']=(record['index']+1)%len(self.m['goals']);self.s['current']=None;self.persist()
@@ -112,10 +136,40 @@ class Dispatcher:
   if hashlib.sha256(archive.read_bytes()).hexdigest()!=delivery['sha256']:raise RuntimeError('Delivered artifact digest mismatch')
   return {'job':out['job_id'],'commit':authoritative['integrated_commit'],'receipt':receipt['verification_id'],'result':out['_result_path']}
  def complete_goal(self,goal,milestone):
-  manifest={**goal['acceptance'],'repository':goal['repository']}
+  manifest={**goal['acceptance'],'repository':goal['repository'],'verifier_executable':self.m['controller']}
   result=acceptance.run_acceptance(manifest,self.path.parent/(goal['id']+'-goal'),milestone['commit'])
   # The existing clean-checkout independent acceptance implementation supplies receipts.
   return result
+ def publish_goal(self,goal):
+  publication=self.m['main_publication'][goal['id']]
+  for path in [publication['binding'],str(ROOT/'main-publication.py')]:
+   if self.m.get('trusted_files',{}).get(path)!=queue_api.sha(path):raise ValueError('Main publication binding/code is not pinned')
+  publisher=module('main_publication','main-publication.py').Publisher(publication['state'])
+  with publisher.locked():return publisher.publish(queue_api.read(publication['binding']),goal)
+ def publication_tick(self,goal):
+  gs=self.s['goals'][goal['id']];gs['publication']=self.publish_goal(goal)
+  if gs['publication']['state']=='confirmed':
+   gs['state']=gs.pop('publication_next_state');gs.pop('reason',None)
+  elif gs['publication']['state']=='awaiting_ci':gs['state']='publishing';gs['next_at']=self.clock()+30
+  else:raise RuntimeError('Unrecognized publication state; preserve intent')
+ def record_evaluation(self,goal,commit,result,milestone_receipt=None,baseline=False):
+  self.s['goals'][goal['id']]['goal_acceptance']=result
+  record={
+   'version':1,'goal_id':goal['id'],'commit':commit,'baseline':baseline,
+   'milestone_receipt':milestone_receipt,'evaluated_utc':utc(),'result':result}
+  save(pathlib.Path(goal['root'])/'goal-evaluation.json',record)
+  return record
+ def evaluate_baseline(self,goal):
+  gs=self.s['goals'][goal['id']];commit=goal['initial_base']
+  result=self.complete(goal,{'commit':commit});record=self.record_evaluation(goal,commit,result,baseline=True)
+  gs['baseline_evaluation']={'commit':commit,'finished':not result.get('execution_unresolved',False),'evidence':record}
+  if result.get('execution_unresolved'):
+   gs['state']='paused';gs['reason']='Baseline verifier execution unresolved; preserve process evidence';return
+  if result.get('passed') is True and result.get('status')=='passed' and result.get('commit')==commit and result.get('receipts'):
+   gs['state']='complete';gs['completion_base']=commit;return
+  if result.get('status')=='awaiting_acceptance' or result.get('phase') in ('policy','setup','check_launch'):
+   gs['state']='paused';gs['reason']='Approved goal verification prerequisites unavailable: '+result.get('reason','inspect retained evaluation');return
+  gs['state']='ready';gs['next_at']=self.clock()
  def finish(self,goal,status):
   gs=self.s['goals'][goal['id']]
   if status.get('current'):gs['state']='paused';raise RuntimeError('Goal has unresolved active state; cannot reassign')
@@ -130,9 +184,27 @@ class Dispatcher:
   if self.m.get('circuits_file'):save(pathlib.Path(self.m['circuits_file']),self.s['circuits'])
   if milestone:
    if not any(m['job']==milestone['job'] for m in gs['milestones']):gs['milestones'].append(milestone)
-   result=self.complete(goal,milestone);gs['goal_acceptance']=result
-   if result.get('passed') is True and result.get('status')=='passed' and result.get('commit')==milestone['commit'] and result.get('receipts'):
-    gs['state']='complete';gs['completion_milestone']=milestone;return
+   result=self.complete(goal,milestone)
+   # Feed independent whole-goal failures back into the existing pstack admission.
+   # Save before releasing this cycle: restart reconciles the same milestone,
+   # never invents acceptance from the feedback or asks a human to plan repairs.
+   self.record_evaluation(goal,milestone['commit'],result,milestone['receipt'])
+   if result.get('execution_unresolved'):
+    gs['state']='paused';gs['reason']='Independent goal verifier ownership/quiescence unconfirmed; preserve process evidence';return
+   passed=result.get('passed') is True and result.get('status')=='passed' and result.get('commit')==milestone['commit'] and bool(result.get('receipts'))
+   publication=self.m.get('main_publication',{}).get(goal['id'])
+   if publication:
+    binding=queue_api.read(publication['binding'])
+    if passed or not binding.get('require_goal_completion'):
+     gs['publication']=self.publish_goal(goal)
+     if gs['publication']['state']=='awaiting_ci':
+      gs['state']='publishing';gs['next_at']=self.clock()+30
+      gs['publication_next_state']='complete' if passed else 'paused' if goal.get('admission_mode')=='one_cycle' else 'ready'
+      if passed:gs['completion_milestone']=milestone
+      return
+     if gs['publication']['state']!='confirmed':raise RuntimeError('Unrecognized publication state')
+   if passed:
+    gs['state']='complete';gs['completion_milestone']=milestone;gs.pop('reason',None);return
   if goal.get('admission_mode')=='one_cycle' and out['status']!='all_free_unavailable':
    gs['state']='paused';gs['reason']='Bounded implementation cycle ended; independent review or explicit repair admission required';return
   if status.get('status')=='paused':gs['state']='paused';gs['reason']=status.get('pause_reason');return
@@ -144,10 +216,29 @@ class Dispatcher:
   if selected is None:
    states=[s['state'] for s in self.s['goals'].values()];self.s['status']='complete' if all(s=='complete' for s in states) else 'waiting' if any(s not in ('complete','paused') for s in states) else 'paused';self.persist();return False
   index,goal=selected;prior=self.read_status(goal)
+  if self.s['goals'][goal['id']]['state']=='publishing':
+   self.s['current']={'goal':goal['id'],'index':index,'phase':'publication'};self.persist()
+   try:self.audit_completed();self.publication_tick(goal)
+   except Exception as error:
+    self.s['status']='needs_attention';self.s['goals'][goal['id']].update(state='paused',reason=str(error));self.persist();raise
+   self.s['current']=None;self.s['cursor']=(index+1)%len(self.m['goals']);self.persist();return True
+  if goal.get('initial_base') and not self.s['goals'][goal['id']].get('baseline_evaluation'):
+   if prior.get('status')=='paused' or (pathlib.Path(goal['root'])/'PAUSE').exists():
+    self.s['goals'][goal['id']].update(state='paused',reason='Owner pause before baseline evaluation');self.persist();return True
+   if prior.get('sequence',0)!=0 or prior.get('current'):raise RuntimeError('Initial evaluation requires a fresh goal, not an unresolved or existing cycle')
+   self.s['status']='evaluating';self.s['current']={'goal':goal['id'],'index':index,'phase':'baseline_evaluation','commit':goal['initial_base']};self.persist()
+   try:self.evaluate_baseline(goal)
+   except Exception as error:
+    self.s['status']='needs_attention';self.persist();raise
+   self.s['current']=None;self.s['cursor']=(index+1)%len(self.m['goals']);self.persist();return True
   if self.m.get('circuits_file'):save(pathlib.Path(self.m['circuits_file']),self.s['circuits'])
   self.s['status']='running';self.s['current']={'goal':goal['id'],'index':index,'expected_sequence':prior['sequence']+1,'phase':'spawning'};self.persist()
   try:
    self.runner(goal,self.s['current']);status=self.read_status(goal)
+   if 'exit_status' in self.s['current']:
+    self.s['goals'][goal['id']]['last_host_exit']={
+     'sequence':self.s['current']['expected_sequence'],
+     'exit_status':self.s['current']['exit_status'],'observed_utc':utc()}
    if status['sequence']!=self.s['current']['expected_sequence']:
     if status['sequence']==self.s['current']['expected_sequence']-1 and status.get('status')=='paused' and not status.get('current'):
      self.s['goals'][goal['id']].update(state='paused',reason=status.get('pause_reason','Paused before admission'))
@@ -169,15 +260,36 @@ class Dispatcher:
      try:p.wait(timeout=120) # Operator-stop cleanup only, never a research budget.
      except subprocess.TimeoutExpired:os.killpg(p.pid,signal.SIGKILL);p.wait()
      raise
-    if code:raise RuntimeError('Goal cycle exited '+str(code)+'; inspect '+str(log))
+    record['exit_status']=code;self.persist()
+    if code:
+     # A host can fail after durably saving its terminal result. Apply exactly
+     # the normal sequence/cleanup/controller audit in step(), rather than
+     # requiring an operator restart to reach recover(). Exit status alone
+     # never authorizes replacement or accepts a worker claim.
+     status=self.read_status(goal)
+     if (status.get('sequence')!=record['expected_sequence'] or status.get('current')
+         or not status.get('last_cycle')):
+      raise RuntimeError('Goal cycle exited '+str(code)+' without a completed result; inspect '+str(log))
   finally:locks.close()
  def audit_completed(self):
   for g in self.m['goals']:
    gs=self.s['goals'][g['id']]
+   if gs.get('goal_acceptance',{}).get('execution_unresolved'):
+    # Parent loss may have closed the helper's control pipe while cleanup was
+    # still finishing. Re-evaluate the same accepted milestone only after the
+    # existing supervisor records positive quiescence; never dispatch coding
+    # work or clear an unknown execution on an elapsed-time assumption.
+    if not acceptance.audit_processes(self.path.parent/(g['id']+'-goal')):
+     raise RuntimeError('Independent goal verifier execution unresolved; inspect retained process evidence before resume')
+    if gs.get('baseline_evaluation',{}).get('finished') is False:self.evaluate_baseline(g)
+    else:self.finish(g,self.read_status(g))
+    self.persist()
+    if gs.get('goal_acceptance',{}).get('execution_unresolved'):
+     raise RuntimeError('Independent goal verifier execution unresolved after evidence recheck')
    for milestone in gs.get('milestones',[]):
     out=json.loads(pathlib.Path(milestone['result']).read_text());out['_result_path']=milestone['result']
     if self.audit(g,out)!=milestone:raise RuntimeError('Stored milestone identity changed')
-   if gs['state']!='complete':continue
+   if gs['state'] not in ['complete','publishing']:continue
    result=gs['goal_acceptance']
    for receipt in result.get('receipts',[]):
     path=pathlib.Path(receipt['stdout'])
@@ -216,11 +328,17 @@ def owner_resume(manifest):
 def registered_goal(controller,config):
  return json.loads(subprocess.check_output([controller,'goal','--config',str(config)],text=True,timeout=30))
 
+def inspect_job(controller,config,job):
+ return json.loads(subprocess.check_output([controller,'inspect','--config',str(config),'--job',job],text=True,timeout=40))
+
 def main():
- p=argparse.ArgumentParser();p.add_argument('action',choices=['run','status','enqueue','stage-update','queue-status']);p.add_argument('--manifest',required=True,type=pathlib.Path);p.add_argument('--resume',action='store_true');p.add_argument('--policy-migration',type=pathlib.Path);p.add_argument('--queue',type=pathlib.Path);p.add_argument('--input',type=pathlib.Path);p.add_argument('--wait-for-owner',action='store_true');p.add_argument('--exit-when-idle',action='store_true');a=p.parse_args();m=json.loads(a.manifest.read_text());state=pathlib.Path(m['state'])
+ p=argparse.ArgumentParser();p.add_argument('action',choices=['run','status','enqueue','stage-update','queue-status','retry']);p.add_argument('--manifest',required=True,type=pathlib.Path);p.add_argument('--resume',action='store_true');p.add_argument('--policy-migration',type=pathlib.Path);p.add_argument('--queue',type=pathlib.Path);p.add_argument('--input',type=pathlib.Path);p.add_argument('--goal');p.add_argument('--wait-for-owner',action='store_true');p.add_argument('--exit-when-idle',action='store_true');a=p.parse_args();m=json.loads(a.manifest.read_text());state=pathlib.Path(m['state'])
  queue=queue_api.Queue(a.queue,save) if a.queue else None
- if a.action in ['enqueue','stage-update','queue-status']:
+ if a.action in ['enqueue','stage-update','queue-status','retry']:
   if not queue:p.error('--queue required')
+  if a.action=='retry':
+   if not a.goal:p.error('--goal required')
+   item=queue_api.request_retry(queue,m,a.goal,inspect_job,Locks);print(json.dumps({'state':'retry_queued','request':item['id'],'goal':item['goal']}));return
   if a.action=='enqueue':
    if not a.input:p.error('--input required')
    item=queue.enqueue(json.loads(a.input.read_text()),m,registered_goal);print(json.dumps({'state':'queued','intent':item['id'],'goal':item['input']['goal']['id']}));return
@@ -270,6 +388,7 @@ def main():
     if queue_api.digest(dispatcher.m)!=queue_api.digest(queue_api.read(a.manifest)):
      dispatcher=Dispatcher(queue_api.read(a.manifest),state);dispatcher.pool_fds=locks.fds();dispatcher.recover_and_audit()
     queue_api.enroll(queue,dispatcher,a.manifest,registered_goal)
+    queue_api.retry_goals(queue,dispatcher,inspect_job,Locks)
    if dispatcher.step():continue
    if not queue:
     if dispatcher.s['status'] in ('complete','paused'):break

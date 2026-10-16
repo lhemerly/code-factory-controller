@@ -760,3 +760,119 @@ async fn abort_stops_only_background_shells_linked_to_the_exact_bound_session() 
         }
     }
 }
+
+#[tokio::test]
+async fn unbound_failed_admission_can_be_recovery_bound_without_worker_authority() {
+    let n = NativeFixture::new(false).await;
+    assert!(n.f.engine.abort_worker("job").await.is_err());
+    {
+        let mut r = n.runtime.lock().unwrap();
+        r.info["parentID"] = Value::Null;
+        r.info["permissions"] = json!([{"action":"*","resource":"*","effect":"deny"}]);
+        r.messages.clear();
+    }
+    let bound =
+        n.f.engine
+            .recover_bind_v2("job", "ses_native")
+            .await
+            .unwrap();
+    assert_eq!(bound.state, "blocked");
+    assert_eq!(bound.attempt.unwrap().dispatch_state, "recovery_bound");
+    let grants =
+        n.f.engine
+            .store
+            .transaction(|tx| {
+                Ok(tx.query_row("SELECT count(*) FROM grants", [], |row| {
+                    row.get::<_, i64>(0)
+                })?)
+            })
+            .unwrap();
+    assert_eq!(grants, 0);
+    assert!(n.request().await.get("error").is_some());
+    assert!(n.f.engine.action("job", "requeue").is_err());
+    assert_eq!(
+        n.f.engine
+            .recover_bind_v2("job", "ses_native")
+            .await
+            .unwrap()
+            .state,
+        "blocked"
+    );
+    n.f.engine.abort_worker("job").await.unwrap();
+    let status = n.f.engine.status(&n.f.engine.get("job").unwrap());
+    assert_eq!(
+        status["execution_recovery"]["execution_stop"]["status"],
+        "confirmed"
+    );
+    assert_eq!(
+        status["execution_recovery"]["accounting"]["status"],
+        "settled_zero"
+    );
+}
+
+#[tokio::test]
+async fn recovery_binding_refuses_history_cost_unknown_fields_and_existing_binding() {
+    let bound = NativeFixture::new(true).await;
+    bound.f.engine.abort_worker("job").await.unwrap();
+    assert!(
+        bound
+            .f
+            .engine
+            .recover_bind_v2("job", "ses_native")
+            .await
+            .is_err()
+    );
+    for kind in [
+        "messages",
+        "tokens",
+        "missing-cost",
+        "parent",
+        "descendant",
+        "shell",
+        "active",
+        "permissions",
+    ] {
+        let n = NativeFixture::new(false).await;
+        assert!(n.f.engine.abort_worker("job").await.is_err());
+        {
+            let mut r = n.runtime.lock().unwrap();
+            r.info["parentID"] = Value::Null;
+            r.info["permissions"] = json!([{"action":"*","resource":"*","effect":"deny"}]);
+            r.messages.clear();
+            if kind == "messages" {
+                r.messages
+                    .push(json!({"type":"user","text":"retained history"}));
+            }
+            match kind {
+                "tokens" => r.info["tokens"]["input"] = json!(1),
+                "missing-cost" => {
+                    r.info.as_object_mut().unwrap().remove("cost");
+                }
+                "parent" => r.info["parentID"] = json!("other"),
+                "descendant" => r.child = true,
+                "shell" => r.shells = true,
+                "active" => r.active = true,
+                "permissions" => {
+                    r.info["permissions"] = json!([{"action":"*","resource":"*","effect":"allow"}])
+                }
+                _ => (),
+            }
+        }
+        assert!(
+            n.f.engine
+                .recover_bind_v2("job", "ses_native")
+                .await
+                .is_err(),
+            "{kind}"
+        );
+        assert!(
+            n.f.engine
+                .get("job")
+                .unwrap()
+                .attempt
+                .unwrap()
+                .session_id
+                .is_none()
+        );
+    }
+}

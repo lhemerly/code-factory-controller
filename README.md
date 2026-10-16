@@ -66,7 +66,7 @@ Consumer contract schemas are pinned under `contracts/plugin-0.1/`. The provider
 
 Copy [the controller configuration](examples/controller.json) and replace its absolute repository, data and delivery paths. The data and delivery directories must be outside the worker repository. Select trusted profile commands, an explicitly approved free-model allowlist, a zero spend ceiling, and a data-handling approval. The service refuses remote listening, incompatible runtime versions, paid policy and silent changes to the configuration of an existing database.
 
-The first delivery target is the configured local `delivery_dir`. Each accepted job produces a `.tar` Git archive with its exact commit and SHA-256 digest. This release does not open PRs, push to remotes, deploy applications or claim a deployment occurred.
+The first delivery target is the configured local `delivery_dir`. Each accepted job produces a `.tar` Git archive with its exact commit and SHA-256 digest. The core does not open PRs or push to remotes. The opt-in [GitHub review/delivery adapter](docs/github-review-delivery.md) updates an explicitly bound existing private PR after independent verification; it never merges or deploys.
 
 Start a dedicated OpenCode server using [the trusted runtime configuration](examples/opencode.json). Its `small_model` must also be explicitly approved and free. Keep the controller's operator credential out of the worker server environment.
 

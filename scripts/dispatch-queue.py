@@ -63,10 +63,11 @@ class Queue:
   self.sock.unlink(missing_ok=True)
   channel=socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM);channel.bind(str(self.sock));os.chmod(self.sock,0o600);return channel
  def describe(self,state):
-  result=[]
-  for item in self.snapshot()['goals']:
+  result=[];snapshot=self.snapshot();applied={r['id'] for r in state.get('queue_retries',[])}
+  for item in snapshot['goals']:
    name=item['input']['goal']['id'];gs=state.get('goals',{}).get(name);current=state.get('current') or {}
    status='queued' if gs is None else 'blocked' if state.get('status')=='needs_attention' and current.get('goal')==name else 'running' if current.get('goal')==name else 'completed' if gs.get('state')=='complete' else 'awaiting_review' if gs.get('state')=='paused' and gs.get('native_status')=='accepted' else 'blocked' if gs.get('state')=='paused' else 'queued'
+   if current.get('goal')!=name and any(r['goal']==name and r['id'] not in applied for r in snapshot.get('retries',[])):status='retry_queued'
    result.append({'id':name,'intent':item['id'],'state':status,'software_milestones':len(gs.get('milestones',[])) if gs else 0})
   return result
 
@@ -195,3 +196,55 @@ def enroll(queue,dispatcher,manifest_path,lookup):
   queue.save(journal_path,{'manifest':proposed,'state':state})
   queue.save(manifest_path,proposed);queue.save(dispatcher.path,state);unlink_durable(journal_path)
   dispatcher.m=proposed;dispatcher.s=state
+
+
+def failed_input(manifest,goal,inspect):
+ """Fresh controller-backed stop/candidate evidence; never infer acceptance from saved prose."""
+ root=pathlib.Path(goal['root']);status=read(root/'status.json')
+ if status.get('current'):raise RuntimeError('Goal still has active or uncertain execution')
+ record_path=pathlib.Path(status['last_cycle']['result']);record=read(record_path)
+ if record.get('goal_id')!=goal['id'] or record.get('sequence')!=status['sequence'] or record.get('status')!='failed':raise ValueError('Retry requires the exact last failed cycle')
+ recovery=record.get('recovery') or {}
+ if record.get('cleanup_confirmed') is not True or record.get('fence_error') or recovery.get('execution_stop',{}).get('status')!='confirmed' or recovery.get('accounting',{}).get('status')=='violating':raise ValueError('Retry requires confirmed cleanup/stop and no accounting violation')
+ observed=inspect(manifest['controller'],record_path.parent/'controller.json',record['job_id']);current=observed.get('execution_recovery') or {}
+ if current.get('stop_id')!=recovery.get('stop_id') or current.get('execution_stop',{}).get('status')!='confirmed' or current.get('accounting',{}).get('status')=='violating':raise ValueError('Controller did not confirm the exact owned stop')
+ receipt=observed.get('active_verification_receipt') or {};candidate=record.get('candidate')
+ if record.get('failure_kind')=='blocked' and not (candidate and receipt.get('outcome')=='failed'):raise ValueError('Permission/ownership blocker is not an automatic test repair')
+ if candidate:
+  saved=(record.get('candidate_status') or {}).get('active_verification_receipt') or {}
+  if record.get('scope_approved') is not True or observed.get('candidate_commit')!=candidate or receipt.get('candidate_commit')!=candidate or receipt.get('verification_id')!=saved.get('verification_id') or receipt.get('outcome')!='failed':raise ValueError('Failed candidate receipt mismatch')
+  cfg=read(root/'supervisor.json');template=read(root/'job-template.json');repo=goal['repository']
+  exact=subprocess.check_output(['/usr/bin/git','-C',repo,'rev-parse',candidate+'^{commit}'],text=True).strip()
+  if exact!=candidate:raise ValueError('Repair candidate must be exact')
+  changed=subprocess.check_output(['/usr/bin/git','-C',repo,'diff','--name-only',cfg['initial_base'],candidate],text=True).splitlines()
+  under=lambda p,r:p==r or p.startswith(r+'/')
+  if any(not any(under(p,r) for r in template['allowed_paths']) or any(under(p,r) for r in template['protected_paths']) for p in changed):raise ValueError('Repair candidate exceeds the unchanged approved scope')
+ return status,record,{'result_sha256':sha(record_path),'sequence':record['sequence'],'stop_id':current['stop_id'],'candidate':candidate,'receipt':receipt.get('verification_id')}
+
+
+def request_retry(queue,manifest,goal_id,inspect,locks):
+ pins(manifest['trusted_files']);goal=next(g for g in manifest['goals'] if g['id']==goal_id);held=locks()
+ try:
+  held.acquire(pathlib.Path(goal['root'])/'supervisor.lock');status,record,evidence=failed_input(manifest,goal,inspect)
+  if (pathlib.Path(goal['root'])/'PAUSE').exists():raise ValueError('Explicit goal PAUSE must be reviewed before retry')
+  item={'goal':goal_id,'evidence':evidence};item['id']=digest(item)
+  def add(doc):
+   retries=doc.setdefault('retries',[])
+   if item not in retries:retries.append(item)
+   return item
+  result=queue.transaction(add);queue.notify();return result
+ finally:held.close()
+
+
+def retry_goals(queue,dispatcher,inspect,locks):
+ if dispatcher.s.get('current'):raise RuntimeError('Retry cannot race active execution')
+ for item in queue.snapshot().get('retries',[]):
+  if any(r['id']==item['id'] for r in dispatcher.s.get('queue_retries',[])):continue
+  goal=next(g for g in dispatcher.m['goals'] if g['id']==item['goal']);root=pathlib.Path(goal['root']);held=locks()
+  try:
+   held.acquire(root/'supervisor.lock');pins(dispatcher.m['trusted_files']);status,record,evidence=failed_input(dispatcher.m,goal,inspect)
+   if evidence!=item['evidence'] or (root/'PAUSE').exists():raise ValueError('Retry evidence or pause changed since approval')
+   if evidence['candidate']:status['base']=evidence['candidate']
+   status['status']='waiting';status['pause_reason']=None;status['repair_resume']={'request':item['id'],'unaccepted_candidate':evidence['candidate'],'source_cycle':evidence['sequence'],'receipt':evidence['receipt']};queue.save(root/'status.json',status)
+   gs=dispatcher.s['goals'][goal['id']];gs.update(state='ready',reason=None);dispatcher.s['cursor']=dispatcher.m['goals'].index(goal);dispatcher.s.setdefault('queue_retries',[]).append(item);dispatcher.persist()
+  finally:held.close()

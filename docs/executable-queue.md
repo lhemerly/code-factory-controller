@@ -73,3 +73,38 @@ concurrent processes, sockets and crash injection. `test-queue-cli.py` executes 
 actual owner CLI and real controller candidate/integration receipts using fake
 providers, including occupied-slot handoff, a live idle-owner wake-up and restart
 without duplicate admission. Neither fixture invokes an inference provider.
+
+## Receipt-verified retry and maintenance takeover
+
+`retry --goal <existing-id>` records a new owner-approved admission intent for the
+exact last failed result. It does not start a second worker or change a standing
+goal. Registration/configuration pins, positive native stop/cleanup, the exact
+controller stop ID, non-violating accounting and an unchanged user PAUSE are checked.
+A retained candidate additionally requires the matching failed verification receipt
+and an independent Git diff within the original allowed/protected scope. Unknown
+usage remains unknown. At the next owned boundary the executor selects that exact
+candidate as explicitly unaccepted repair input and admits a new job/grant. A
+successful software milestone or a failed native permission/ownership request
+without a failed candidate receipt cannot use this test-repair path. Duplicate and
+stale retry intents cannot create duplicate work.
+
+The one-shot `queue-handoff.py` supports upgrading an already-running queue owner
+without interrupting a productive child. It pins the replacement runtime, requests
+cooperative PAUSE files, and waits on Linux file events for all owned cycles to
+finish. It then freezes only the verified idle coordinator through a pidfd,
+rechecks the durable admission intent, and retires that coordinator. If a new
+admission raced the observation, it resumes the coordinator and waits for that
+cycle instead. Existing receipt audit/owner-resume controls release only this
+handoff's exact temporary pauses. User pauses remain intact. The replacement takes
+the normal owner/pool locks; no schedule, second model slot or polling model call is
+added. Cancelling maintenance can leave its cooperative boundary paused for owner
+review; it never forces a native worker stop.
+
+Independent verification failures are classified from the host's specific verdict,
+not incidental permission/ownership words inside serialized task or receipt data.
+Native permission/ownership denials retain their existing blocked classification.
+An optional read-only `VERIFIER-CONTRACT.md` in the approved data directory records
+namespace facts (input aliases, supplied variables, standard temp directories) with
+its content hash in generated context. It cannot grant permissions or establish
+acceptance. Workers use it to make their tests portable across the native development
+and independently sandboxed verification environments.

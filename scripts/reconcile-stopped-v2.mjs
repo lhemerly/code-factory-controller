@@ -1,5 +1,7 @@
 // Explicit owner recovery for an already stopped V2 attempt. Never prompts a model.
 import {spawn,execFileSync} from 'node:child_process';import {readFile,writeFile,open,rename} from 'node:fs/promises';import {resolve,dirname} from 'node:path';import {createServer} from 'node:net';import {createHash} from 'node:crypto';
+import {OpenCode} from './opencode-v2-client.mjs';
+import {completeSessionInventory} from './native-session-inventory.mjs';
 import {sandbox} from './spark-sandbox.mjs';import {approvedScope,researchContinuation} from './free-model-policy.mjs';
 const root=resolve(process.argv[2]),binary=resolve(process.argv[3]),cfg=JSON.parse(await readFile(resolve(root,'supervisor.json'))),state=JSON.parse(await readFile(resolve(root,'status.json')));if(!state.current||!state.last_cycle)throw Error('Exact unresolved cycle required');
 const dir=state.current.directory,originalPath=state.last_cycle.result,originalBytes=await readFile(originalPath),out=JSON.parse(originalBytes),privateState=JSON.parse(await readFile(resolve(dir,'host-private.json'))),config=JSON.parse(await readFile(resolve(dir,'controller.json'))),work=out.worktree,repo=resolve(root,'repository'),profile=resolve(dir,'native');
@@ -14,7 +16,25 @@ try{
  const native=await launch('/usr/bin/bwrap',[...sandbox(cfg,repo,work,profile,protectedPaths),'serve','--hostname','127.0.0.1','--port',new URL(config.opencode_url).port],env);if(!native.password)throw Error('Native authentication missing');
  const port=await new Promise(ok=>{const s=createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>ok(p))})});const endpoint='http://127.0.0.1:'+port;
  await launch(binary,['serve','--config',resolve(dir,'controller.json'),'--listen','127.0.0.1:'+port],{...env,FACTORY_OPERATOR_TOKEN:privateState.operator,FACTORY_OPENCODE_PASSWORD:native.password});
- const op=async name=>{const r=await fetch(endpoint+'/operator/'+name,{method:'POST',headers:{authorization:'Bearer '+privateState.operator,'content-type':'application/json'},body:JSON.stringify({job_id:out.job_id}),signal:AbortSignal.timeout(40000)});const data=await r.json();await atomic(resolve(dir,'recovery-operator-'+name+'.json'),data);if(!r.ok)throw Error('Recovery '+name+': '+JSON.stringify(data));return data};
+ const op=async (name,body={})=>{const r=await fetch(endpoint+'/operator/'+name,{method:'POST',headers:{authorization:'Bearer '+privateState.operator,'content-type':'application/json'},body:JSON.stringify({job_id:out.job_id,...body}),signal:AbortSignal.timeout(40000)});const data=await r.json();await atomic(resolve(dir,'recovery-operator-'+name+'.json'),data);if(!r.ok)throw Error('Recovery '+name+': '+JSON.stringify(data));return data};
+ const before=await op('status');
+ if(before.execution_recovery?.session_id===null){
+  const prepared=JSON.parse(await readFile(resolve(dir,'operator-prepare.json')));
+  if(out.phase!=='admission'||out.parent||out.child||prepared.attempt.attempt_id!==out.attempt||prepared.attempt.session_id!==null)throw Error('Unbound recovery is only for a retained never-dispatched admission');
+  const client=OpenCode.make({baseUrl:config.opencode_url,headers:{authorization:'Basic '+Buffer.from('opencode:'+native.password).toString('base64'),'x-opencode-directory':work},fetch:(u,o={})=>fetch(u,{...o,signal:AbortSignal.timeout(20000)})});
+  const inventory=await completeSessionInventory(client);
+  const intentPath=resolve(dir,'unbound-recovery-intent.json');let intent;try{intent=JSON.parse(await readFile(intentPath))}catch(e){if(e.code!=='ENOENT')throw e}
+  const metadata={factoryRecovery:{attempt:out.attempt,job:out.job_id,original_result_sha256:sha(originalBytes)}};
+  let session;
+  if(inventory.length===0){
+   if(intent)throw Error('Prior session creation is uncertain; no repeated creation');
+   intent={metadata,worktree:work,phase:'creating'};await atomic(intentPath,intent);
+   session=await client.session.create({title:'Unbound admission recovery '+out.attempt,location:{directory:work},metadata,permissions:[{action:'*',resource:'*',effect:'deny'}]});
+   await atomic(intentPath,{...intent,phase:'created',session:session.id});
+  }else if(inventory.length===1&&intent&&JSON.stringify(inventory[0].metadata?.factoryRecovery)===JSON.stringify(metadata.factoryRecovery)&&inventory[0].location.directory===work){session=inventory[0]}
+  else throw Error('Retained native sessions require separate ownership/accounting review; no history deletion');
+  await op('recover-bind-v2',{session_id:session.id});
+ }
  await op('abort');result=await op('status');const recovery=result.execution_recovery;if(recovery?.execution_stop?.status!=='confirmed'||recovery.accounting?.status==='violating'||result.state!=='blocked'||recovery.attempt_id!==out.attempt)throw Error('Controller did not confirm exact safe stop');confirmed=true;
 }finally{for(const p of procs.toReversed())await stop(p)}
 if(!confirmed||!procs.every(p=>p.exitCode!==null||p.signalCode!==null))throw Error('Recovery cleanup unconfirmed; state remains fenced');

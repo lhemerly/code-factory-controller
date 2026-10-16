@@ -241,6 +241,9 @@ async fn operator(
                 id, body["session_id"].as_str().unwrap_or(""),
                 body["worker_token"].as_str().unwrap_or(""),
             ).await?)?,
+            "recover-bind-v2" => serde_json::to_value(s.engine.recover_bind_v2(
+                id, body["session_id"].as_str().unwrap_or(""),
+            ).await?)?,
             "status" => s.engine.status(&s.engine.reconcile_delivery(id)?),
             "advance" => serde_json::to_value(s.engine.advance(id).await?)?,
             "run" => serde_json::to_value(

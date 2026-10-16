@@ -33,3 +33,27 @@ history previews additionally execute the real controller's offline `inspect` CL
 they do not admit a job or contact a provider. Runtime activation must happen at an
 idle admission boundary with trusted-source pins updated through the existing
 implementation migration, preserving goals, permissions and acceptance contracts.
+
+After an independently accepted milestone, the dispatcher writes
+`goal-evaluation.json` outside the worker checkout. The next task includes the
+whole-goal result for that exact accepted commit, separately from cycle-level
+verification. A failed goal check therefore supplies a concrete repair target
+instead of silently repeating an already accepted milestone. The same context
+builder serves coding goals and research goals; no second planner or scheduler is
+introduced.
+
+Evaluation identity must match the goal and latest accepted commit. Each forwarded
+stdout/stderr log must match its receipt digest; legacy unhashed stderr is omitted.
+Diagnostics are bounded, explicitly marked as untrusted observations, and cannot
+change commands, scope or acceptance. All supplied digests are checked even if a
+diagnostic is omitted for space. Context provenance records the evaluation hash.
+Missing evaluation files preserve existing standalone-cycle behavior. A malformed,
+stale, cross-goal or changed evaluation blocks admission rather than supplying
+misleading repair instructions.
+
+`python3 scripts/test-goal-feedback-cli.py` exercises two real controller deliveries
+and clean-checkout whole-goal evaluations with a deterministic test worker. The
+first milestone passes its checks but fails the goal; after restart the worker
+consumes the actual next-task context and repairs the failed behavior. Completion
+and a subsequent restart require receipt re-audit and cause no duplicate dispatch.
+This is local fixture evidence, not a real-model run or activated deployment.

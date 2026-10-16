@@ -460,7 +460,7 @@ impl Engine {
         let accounting = accounting(&self.config, &info, messages);
         let evidence = json!({"source":"opencode_v2_native_observation","runtime":"2.0.29","observed_at":now(),
             "identity":observed,"native_updated":info["time"]["updated"],
-            "export_sha256":digest(serde_json::to_vec(exported)?),"inventory_count":seen.len(),
+            "export_sha256":digest(serde_json::to_vec(exported)?),"inventory_count":seen.len(),"execution_record_count":messages.len(),
             "quiet_checks":quiet,"no_descendants":true});
         Ok(Observation {
             identity: observed,
@@ -469,16 +469,91 @@ impl Engine {
         })
     }
     pub async fn bind_v2(&self, id: &str, session: &str, token: &str) -> Result<Job> {
-        if !valid_id(session) || token.len() < 32 {
+        self.bind_v2_observed(id, session, token, false).await
+    }
+    /// Attach only an independently observed empty session to a never-bound failed admission.
+    /// No worker grant or execution/resume authority is created by this recovery operation.
+    pub async fn recover_bind_v2(&self, id: &str, session: &str) -> Result<Job> {
+        self.bind_v2_observed(id, session, "", true).await
+    }
+    async fn bind_v2_observed(
+        &self,
+        id: &str,
+        session: &str,
+        token: &str,
+        recovery: bool,
+    ) -> Result<Job> {
+        if !valid_id(session) || (!recovery && token.len() < 32) {
             bail!("Invalid V2 session or capability");
         }
         let _gate = self.gate.lock().await;
         let job = self.get(id)?;
-        if !job.active() || job.state != "running" {
+        if recovery {
+            let attempt = job.attempt.as_ref().context("V2 recovery attempt")?;
+            let prior = self
+                .v2_recovery(&job)?
+                .context("V2 recovery fence missing")?;
+            if job.state != "blocked"
+                || attempt.mode != MODE
+                || !((attempt.session_id.is_none() && attempt.dispatch_state == "stop_unconfirmed")
+                    || (attempt.session_id.as_deref() == Some(session)
+                        && attempt.dispatch_state == "recovery_bound"))
+                || prior["session_id"] != Value::Null
+                || prior["execution_stop"]["status"] != "unconfirmed"
+                || prior["accounting"]["status"] != "unobserved"
+            {
+                bail!("Recovery binding requires the exact never-bound failed admission");
+            }
+        } else if !job.active() || job.state != "running" {
             bail!("Inactive V2 attempt");
         }
         let observation = self.observe_v2(&job, session, None, true).await?;
         require_settled(&observation.accounting)?;
+        if recovery {
+            let rows = observation.accounting["observations"]
+                .as_array()
+                .context("V2 accounting observations")?;
+            if rows.len() != 1 {
+                bail!("Recovery accounting must cover exactly one session");
+            }
+            let runtime = Native::new(
+                job.attempt
+                    .as_ref()
+                    .and_then(|a| a.server_url.as_deref())
+                    .context("V2 endpoint")?,
+            )?;
+            let info = runtime
+                .call(
+                    &format!("/api/session/{session}"),
+                    &job.attempt.as_ref().unwrap().worktree,
+                    false,
+                    &[],
+                )
+                .await?["data"]
+                .clone();
+            let denied = json!([{"action":"*","resource":"*","effect":"deny"}]);
+            if info["permissions"] != denied
+                || info["cost"] != rows[0]["cost"]
+                || info["tokens"] != rows[0]["tokens"]
+                || info["time"]["updated"] != observation.evidence["native_updated"]
+                || identity(&info, session, &job.attempt.as_ref().unwrap().worktree)?
+                    != observation.identity
+                || observation.evidence["inventory_count"] != 1
+                || observation.evidence["execution_record_count"] != 0
+                || observation.identity["parentID"] != Value::Null
+                || rows.len() != 1
+                || ["input", "output", "reasoning"]
+                    .iter()
+                    .any(|key| rows[0]["tokens"][key].as_f64() != Some(0.0))
+                || ["read", "write"]
+                    .iter()
+                    .any(|key| rows[0]["tokens"]["cache"][key].as_f64() != Some(0.0))
+            {
+                bail!(
+                    "Recovery binding requires a sole empty, zero-token native session; preserve other history"
+                );
+            }
+        }
         let observed = observation.identity;
         self.store.transaction(|tx| {
             let mut current=Store::load(tx,id)?;
@@ -488,10 +563,12 @@ impl Engine {
             let key=format!("opencode-v2:{}",attempt.attempt_id);
             let existing:Option<String>=tx.query_row("SELECT value FROM metadata WHERE key=?1",[&key],|r|r.get(0)).optional()?;
             if existing.map(|s|serde_json::from_str::<Value>(&s)).transpose()?.is_some_and(|old|old!=observed) { bail!("V2 binding immutable"); }
-            tx.execute("INSERT INTO grants(token_hash,job_id,session) VALUES(?1,?2,?3) ON CONFLICT(token_hash) DO UPDATE SET job_id=excluded.job_id,session=excluded.session WHERE grants.job_id=excluded.job_id AND grants.session=excluded.session",params![digest(token),id,session])?;
-            let grant:String=tx.query_row("SELECT job_id FROM grants WHERE token_hash=?1 AND session=?2",params![digest(token),session],|r|r.get(0))?;
-            if grant!=id { bail!("V2 capability already scoped"); }
-            attempt.session_id=Some(session.into());attempt.dispatch_state="bound".into();
+            if !recovery {
+                tx.execute("INSERT INTO grants(token_hash,job_id,session) VALUES(?1,?2,?3) ON CONFLICT(token_hash) DO UPDATE SET job_id=excluded.job_id,session=excluded.session WHERE grants.job_id=excluded.job_id AND grants.session=excluded.session",params![digest(token),id,session])?;
+                let grant:String=tx.query_row("SELECT job_id FROM grants WHERE token_hash=?1 AND session=?2",params![digest(token),session],|r|r.get(0))?;
+                if grant!=id { bail!("V2 capability already scoped"); }
+            }
+            attempt.session_id=Some(session.into());attempt.dispatch_state=if recovery {"recovery_bound"} else {"bound"}.into();
             tx.execute("INSERT INTO metadata(key,value) VALUES(?1,?2) ON CONFLICT(key) DO NOTHING",params![key,serde_json::to_string(&observed)?])?;
             Store::save(tx,&mut current,"host V2 native session ownership bound")?;
             Ok(current)

@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {OwnershipLease,observeResearch} from './continuous-ownership.mjs';
+import {OwnershipLease,observeResearch,RepeatedToolFailure,toolFailureObservation} from './continuous-ownership.mjs';
 test('productive work crosses 20 minutes and eight hours with ownership renewed and checkpoints',async()=>{
  let clock=0,renewals=0,checkpoints=0,polls=0;const lease=new OwnershipLease(async()=>renewals++,{now:()=>clock});
  const terminal=await observeResearch({get:async()=>({time:{updated:clock},...(++polls===1001?{outcome:'succeeded'}:{})}),checkpoint:async()=>checkpoints++,resources:async()=>{},lease,shouldStop:()=>false,sleep:async()=>{clock+=60000},now:()=>clock});
@@ -31,4 +31,24 @@ test('completed shell history is quiet but unknown, running and foreign work nev
  assert.equal(runningShells({location:{directory:'/work'},data:[{...item,status:'running'}]},'/work').length,1);
  for(const bad of [{...item,status:'unknown'},{...item,time:{}},{...item,cwd:'/foreign'},{...item,cwd:'/work/../foreign'}])assert.throws(()=>runningShells({location:{directory:'/work'},data:[bad]},'/work'),/unknown/);
  await assert.rejects(awaitNativeShells({shouldStop:()=>true}),/Operator stopping/);
+});
+const tools=parts=>[{type:'assistant',content:parts}];
+const failed=()=>({type:'tool',name:'read',state:{status:'error',error:{type:'tool.execution',message:'untrusted path and prose'}}});
+test('repeated tool errors trigger owned recovery without forwarding raw error prose',async()=>{
+ const context=tools(Array.from({length:4},failed));const observation=toolFailureObservation(context);
+ assert.equal(observation.error_count,4);assert(!JSON.stringify(observation).includes('untrusted path'));
+ const lease=new OwnershipLease(async()=>{});let saved=0;
+ await assert.rejects(observeResearch({get:async()=>({}),toolContext:async()=>context,checkpoint:async()=>saved++,resources:async()=>{},lease,shouldStop:()=>false,sleep:async()=>{}}),error=>error instanceof RepeatedToolFailure&&error.observation.error_count===4);
+ assert.equal(saved,1);
+});
+test('test failures and successful implementation are not mistaken for tool protocol failure',()=>{
+ assert.equal(toolFailureObservation(tools(Array.from({length:8},()=>({type:'tool',name:'shell',state:{status:'completed',metadata:{exit:1}}})))),null);
+ assert.equal(toolFailureObservation(tools([...Array.from({length:4},failed),{type:'tool',name:'edit',state:{status:'completed'}}])),null);
+ assert.equal(toolFailureObservation(tools([...Array.from({length:4},failed),...Array.from({length:6},()=>({type:'tool',name:'read',state:{status:'completed'}}))])),null);
+ assert.equal(toolFailureObservation(tools(Array.from({length:3},failed))),null);
+});
+test('permission rejection remains a blocker and never becomes model failover',async()=>{
+ const context=tools([{type:'tool',name:'read',state:{status:'error',error:{type:'permission.rejected',message:'Permission denied: external_directory'}}}]);
+ const lease=new OwnershipLease(async()=>{});
+ await assert.rejects(observeResearch({get:async()=>({}),toolContext:async()=>context,checkpoint:async()=>{},resources:async()=>{},lease,shouldStop:()=>false,sleep:async()=>{}}),error=>!(error instanceof RepeatedToolFailure)&&/Permission denied/.test(error.message));
 });

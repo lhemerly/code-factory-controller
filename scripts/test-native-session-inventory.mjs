@@ -1,0 +1,4 @@
+import {test} from 'node:test';import assert from 'node:assert/strict';import {completeSessionInventory} from './native-session-inventory.mjs';
+const client=pages=>{let i=0;return{session:{list:async()=>pages[Math.min(i++,pages.length-1)]}}};
+test('follows a final nonempty page cursor through an empty page',async()=>assert.deepEqual(await completeSessionInventory(client([{data:[{id:'ses_one'}],cursor:{next:'one'}},{data:[],cursor:{next:null}}])),[{id:'ses_one'}]));
+test('never treats partial duplicate cyclic or unbounded inventory as complete',async()=>{for(const pages of [[{data:[],cursor:{next:'x'}}],[{data:[{id:'a'}],cursor:{next:'x'}},{data:[{id:'a'}],cursor:{next:null}}],[{data:[]}],[{data:[],cursor:{next:1}}]])await assert.rejects(completeSessionInventory(client(pages)));let i=0;await assert.rejects(completeSessionInventory({session:{list:async()=>({data:[],cursor:{next:String(i++)}})}}),/exceeds bound/)});

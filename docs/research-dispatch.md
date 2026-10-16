@@ -117,6 +117,30 @@ reconciled result. Original failed evidence stays immutable. A retained scoped
 candidate is unaccepted repair input; grants and receipts are never transferred.
 The dispatcher independently rechecks failed-attempt stop IDs through `inspect`.
 
+A never-bound admission can fail while native plugins are still loading. Startup
+now waits, with a bounded deadline, for both the active pstack plugin and its
+registered command; terminal plugin errors still fail admission. This wait never
+prompts a model or changes permissions.
+
+For the narrow stopped, never-dispatched admission case, the recovery helper first
+checks the complete retained native inventory. An empty inventory permits one
+journaled creation of a deny-all session in the same worktree and native profile.
+An uncertain creation is reconciled only by its exact saved metadata; existing
+history is never deleted. Operator-only `recover-bind-v2` independently requires
+one empty session, zero tokens and explicit zero cost, no parent/descendants,
+activity, inbox or shells, and exactly deny-all permissions. It keeps the job
+blocked and grants no worker capability. Only the ordinary abort operation can
+subsequently establish the stop/accounting evidence used by the dispatcher.
+This operation does not authorize resume, acceptance, requeue, or receipt reuse.
+Hold the shared pool lock and the goal supervisor lock throughout recovery.
+
+`node scripts/test-native-plugin-readiness.mjs` and
+`node scripts/test-native-session-inventory.mjs` exercise mocked startup and
+pagination failures. `node scripts/test-native-empty-recovery.mjs /pinned/opencode`
+is a separate actual OpenCode 2.0.29 persistence/permission/accounting contract in
+a fresh temporary profile, with no inference. The Rust V2 tests use a mock native
+HTTP server and real controller state; they are not actual model integrations.
+
 An implementation-only pinned repair can be activated with explicit
 `--policy-migration /absolute/reviewed-migration.json`. The migration anchors the
 previous manifest to the saved digest, validates every new pin and rejects any
@@ -147,3 +171,83 @@ example under an owner-private `research-runs/` root). Review and pin the actual
 project manifest before enabling inference; this repository includes no live
 launch manifest, user service or automatic research activation. Whole-goal
 scientific acceptance requires an independently approved domain protocol.
+
+A cycle host's nonzero exit is retained in `last_host_exit`. If the host already
+saved the expected terminal cycle, the dispatcher immediately performs its normal
+independent cleanup, controller and delivery audits, then evaluates the goal. This
+reuses the restart reconciliation path without requiring an operator restart.
+Missing/in-progress results, stale sequences, unconfirmed stops and failed audits
+remain fenced; process exit status never substitutes for receipts.
+
+`FACTORY_FIXTURE_TEST_HOST_EXIT=1 python3 scripts/test-goal-feedback-cli.py` runs the
+same local deterministic-worker test with both cycle hosts exiting 7 after saving
+their real controller results. It exercises the actual host launcher, continuation
+after failed whole-goal evaluation, and completion without manual recovery. It
+makes no model calls and does not activate a shared runtime.
+
+Whole-goal checks now use the existing controller's `verifier-supervisor` helper,
+matching candidate verification's Linux subreaper/pidfd ownership model. The host
+keeps the helper's control pipe open; owner loss closes it and triggers owned-tree
+cleanup. Plans and process receipts remain alongside goal-check logs. A root exit
+with detached descendants fails acceptance even if its JSON claims success. The
+helper must confirm quiescence before another goal evaluation can launch.
+
+An unresolved process receipt pauses coding dispatch and survives restart. If the
+helper subsequently records positive quiescence, restart audits that evidence and
+re-evaluates the same accepted milestone before deciding whether more coding is
+needed. Missing or inconsistent process evidence remains blocked. No elapsed-time
+assumption, arbitrary process kill, new credential or second executor is used.
+Approved verification environment values are supplied as explicit argv values to
+`/usr/bin/env`, preserving the existing allowlist without shell interpolation.
+
+The standalone backlog acceptance API retains its legacy path unless an absolute
+trusted `verifier_executable` is supplied. The shared goal dispatcher always uses
+its already approved controller executable; it does not accept a worker-selected
+executor. Run `python3 scripts/test-goal-process-lifecycle.py` after building the
+controller for local detached-child, owner-loss, timeout, log-limit and unresolved
+execution regressions. These tests do not invoke a model or activate a deployment.
+
+Fresh autonomous coding goals can declare `initial_base` as an approved exact Git
+commit. Before starting a coding cycle, the dispatcher evaluates that commit with
+the existing independent whole-goal checks and process supervisor. A verified
+already-satisfied goal completes as `completion_base` with no coding dispatch,
+new delivery or invented milestone. A failed behavioral check becomes the first
+worker's digest-checked goal feedback. The original baseline evidence remains in
+`baseline_evaluation` when later milestones replace the latest feedback.
+
+Missing verification policy/prerequisites and unresolved process execution pause
+before spending worker time. Owner pauses also prevent baseline evaluation and
+recovery. A crash during evaluation retains its exact intent; restart audits the
+previous helper before evaluating the same commit. This requires a fresh goal and,
+when present, an identical initial base in its approved cycle configuration. Older
+manifests without `initial_base` retain their existing behavior; this does not
+resume or migrate paused goals.
+
+`python3 scripts/test-goal-baseline-cli.py` runs the actual local dispatcher CLI on
+an already-satisfied goal and an unmet goal. It demonstrates zero coding dispatches
+for the former, diagnostic-guided first work for the latter, and restart evidence
+audit/tamper rejection. The test worker is deterministic; this is not a real-model
+execution result.
+
+Coding-only cycle configurations may omit `data` and `venv`. The existing host then
+creates no research-resource symlinks and adds no research mounts to its sandbox.
+Configured resources still require absolute paths and keep their read-only mounts;
+Git control, native configuration and protected paths retain the same boundary.
+`node scripts/test-coding-sandbox.mjs` exercises that boundary with an actual
+bubblewrap/Python fixture, without starting OpenCode or requesting inference.
+
+During a live attempt the host observes native tool outcomes at its existing
+checkpoint cadence. Four tool execution/validation errors among the last six
+terminal tool results, without a subsequent successful edit/write, request an
+owned stop and a fresh independently admitted attempt. Ordinary nonzero test
+exits are completed shell results and do not trigger this guard. Raw error prose
+is not forwarded as instructions. The failed model receives a distinct
+`tool_failure` cooldown through the existing free-model circuits, allowing another
+eligible free model to try after cleanup is independently confirmed.
+
+A native permission rejection fences the attempt immediately when observed; it
+never becomes a model failover. Unknown error semantics also block. Stop evidence,
+private-path boundaries, unknown interrupted accounting and independent acceptance
+remain unchanged. This guards the repeated wrong-path/tool-argument behavior
+observed in the first live self-improvement attempts, without an elapsed cutoff
+for productive work or scientific experimentation.

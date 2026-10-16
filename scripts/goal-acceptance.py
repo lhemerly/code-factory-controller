@@ -36,6 +36,8 @@ def run_acceptance(manifest, state_path, commit):
     receipts = []
     setup = []
     try:
+        if manifest.get('verifier_executable') is not None:
+            audit_processes(state_path)
         return _run_acceptance(manifest, state_path, commit, receipts, setup)
     except Exception as error:
         # Setup and process-launch failures are acceptance failures too. The
@@ -44,8 +46,82 @@ def run_acceptance(manifest, state_path, commit):
         reason = ''.join(c if c.isprintable() else ' ' for c in str(error))[:1000]
         return {'passed': False, 'status': 'acceptance_failed', 'commit': commit,
                 'phase': phase, 'reason': reason, 'error_type': type(error).__name__,
+                'execution_unresolved': getattr(error, 'execution_unresolved', False),
                 'receipts': receipts, 'setup': setup,
                 'retry_guidance': 'Restore the approved repository and verifier prerequisites, inspect retained logs, and resume the same goal state.'}
+
+
+def audit_processes(state_path):
+    """Never replace a prior verifier until its helper has confirmed quiescence."""
+    count = 0
+    for path in Path(str(state_path)+'.acceptance').glob('*/*.plan.json'):
+        try:
+            plan = json.loads(path.read_text())
+            observed = json.loads(path.with_name(path.name.replace('.plan.json','.process.json')).read_text())
+            if (observed.get('version') != 1 or observed.get('execution_id') != plan['execution_id']
+                    or observed.get('observer') != 'linux_subreaper_waitpid_pidfd'
+                    or observed.get('quiescent') is not True):
+                raise ValueError('Prior goal verifier ownership/quiescence unconfirmed')
+            count += 1
+        except Exception as error:
+            error.execution_unresolved = True
+            raise
+    return count
+
+
+def supervised_check(executable, argv, checkout, env, timeout, stdout, stderr, receipt):
+    """Reuse Factory's Linux subreaper executor; keep its control pipe alive.
+
+    Parent loss closes the pipe and asks the existing helper to clean only its
+    owned descendants. No process scan, PID replay or second executor is added.
+    """
+    if not isinstance(executable, str) or not Path(executable).is_absolute():
+        raise ValueError('absolute trusted verifier executable required')
+    execution_id = uuid.uuid4().hex
+    plan_path = stdout.with_suffix('.plan.json')
+    process_path = stdout.with_suffix('.process.json')
+    plan = {'execution_id': execution_id, 'argv': ['/usr/bin/env',
+            *[key+'='+value for key, value in env.items()
+              if key not in ('PATH', 'FACTORY_VERIFICATION_COMMIT')], *argv],
+            'cwd': str(checkout.resolve()), 'log': str(stderr.resolve()),
+            'stdout': str(stdout.resolve()), 'commit': env['FACTORY_VERIFICATION_COMMIT'],
+            'seconds': math.ceil(timeout), 'receipt': str(process_path.resolve())}
+    plan_path.write_text(json.dumps(plan))
+    receipt['process_receipt'] = str(process_path.resolve())
+    with stdout.with_suffix('.supervisor.stderr').open('wb') as diagnostic:
+        process = subprocess.Popen([executable, 'verifier-supervisor', '--plan', str(plan_path.resolve())],
+            env={'PATH': env['PATH']}, stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL, stderr=diagnostic)
+        try:
+            process.wait(timeout=math.ceil(timeout)+5)
+        except subprocess.TimeoutExpired as error:
+            error.execution_unresolved = True
+            raise
+        finally:
+            process.stdin.close()
+            if process.poll() is None:
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired as error:
+                    error.execution_unresolved = True
+                    raise
+    try:
+        observed = json.loads(process_path.read_text())
+        receipt['executor'] = observed
+        if (process.returncode != 0 or observed.get('version') != 1
+                or observed.get('execution_id') != execution_id
+                or observed.get('observer') != 'linux_subreaper_waitpid_pidfd'
+                or observed.get('quiescent') is not True):
+            raise ValueError('Goal verifier ownership/quiescence unconfirmed')
+    except Exception as error:
+        error.execution_unresolved = True
+        raise
+    receipt['exit_status'] = observed.get('root_exit_status')
+    if (observed.get('root_exit_status') != 0 or observed.get('leaked_descendants') is not False
+            or observed.get('termination_reason') != 'root_exit' or observed.get('cleanup_error')
+            or observed.get('output_truncated') is not False):
+        return observed.get('termination_reason', 'supervised execution failed')
+    return None
 
 
 def _run_acceptance(manifest, state_path, commit, receipts, setup):
@@ -97,24 +173,29 @@ def _run_acceptance(manifest, state_path, commit, receipts, setup):
                    'stdout': str(stdout), 'stderr': str(stderr)}
         receipts.append(receipt)
         try:
-            with stdout.open('wb') as out, stderr.open('wb') as err:
-                process = subprocess.Popen(argv, cwd=checkout, env=env, stdout=out, stderr=err, start_new_session=True)
-                try:
-                    deadline = time.monotonic() + timeout
-                    failure = None
-                    while process.poll() is None:
-                        if time.monotonic() > deadline or stdout.stat().st_size + stderr.stat().st_size > 1024*1024:
-                            failure = 'timeout or log limit'
-                            break
-                        time.sleep(.05)
-                finally:
-                    if process.poll() is None:
-                        try:
-                            os.killpg(process.pid, signal.SIGKILL)
-                        except ProcessLookupError:
-                            pass
-                    receipt['exit_status'] = process.wait()
+            if manifest.get('verifier_executable') is not None:
+                failure = supervised_check(manifest['verifier_executable'], argv, checkout,
+                    env, timeout, stdout, stderr, receipt)
+            else:
+                with stdout.open('wb') as out, stderr.open('wb') as err:
+                    process = subprocess.Popen(argv, cwd=checkout, env=env, stdout=out, stderr=err, start_new_session=True)
+                    try:
+                        deadline = time.monotonic() + timeout
+                        failure = None
+                        while process.poll() is None:
+                            if time.monotonic() > deadline or stdout.stat().st_size + stderr.stat().st_size > 1024*1024:
+                                failure = 'timeout or log limit'
+                                break
+                            time.sleep(.05)
+                    finally:
+                        if process.poll() is None:
+                            try:
+                                os.killpg(process.pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+                        receipt['exit_status'] = process.wait()
             receipt['stdout_sha256'] = hashlib.sha256(stdout.read_bytes()).hexdigest()
+            receipt['stderr_sha256'] = hashlib.sha256(stderr.read_bytes()).hexdigest()
         except Exception as error:
             error.acceptance_phase = 'check_launch'
             raise

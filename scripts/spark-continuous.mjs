@@ -6,9 +6,10 @@ import {resolve,dirname} from 'node:path';
 import {createHash,randomBytes} from 'node:crypto';
 import {createServer} from 'node:net';
 import {OpenCode} from './opencode-v2-client.mjs';
-import {buildResearchContext,createCycleDirectory} from './research-context.mjs';
-import {OwnershipLease,observeResearch,awaitNativeShells} from './continuous-ownership.mjs';
+import {buildResearchContext,createCycleDirectory,commitSubject} from './research-context.mjs';
+import {OwnershipLease,observeResearch,awaitNativeShells,RepeatedToolFailure} from './continuous-ownership.mjs';
 import {sandbox} from './spark-sandbox.mjs';
+import {waitForFactoryPlugin} from './native-plugin-readiness.mjs';
 import {freeModels,classify,route,failure,recoveryAction,replacementAllowed,approvedScope} from './free-model-policy.mjs';
 const oneCycle=process.argv.includes('--one-cycle');
 const root=resolve(process.argv[2]),cfg=JSON.parse(await readFile(resolve(root,'supervisor.json')));
@@ -82,15 +83,17 @@ async function runCycle(sequence){
   const template=JSON.parse(await readFile(resolve(root,'job-template.json')));await op('admit',{...template,job_id:job,base_commit:state.base,task_brief:task});
   const prepared=await op('prepare',{mode:'opencode_v2'});work=prepared.attempt.worktree;out.worktree=work;out.attempt=prepared.attempt.attempt_id;out.git_control_sha256=sha(await readFile(resolve(work,'.git')));lease=new OwnershipLease(()=>op('heartbeat',{attempt_id:out.attempt}),{intervalMs:cfg.ownership_heartbeat_seconds*1000}).start();await lease.tick(true);await cycleSave();
   if(git(work,'rev-parse','--show-toplevel')!==work)throw Error('Worker directory is not actual codebase root');
-  await symlink(cfg.venv,resolve(work,'.venv'));await symlink(cfg.data,resolve(work,'data'));await mkdir(resolve(work,'.opencode/pstack-admission'),{recursive:true});
+  if(cfg.venv!=null)await symlink(cfg.venv,resolve(work,'.venv'));
+  if(cfg.data!=null)await symlink(cfg.data,resolve(work,'data'));
+  await mkdir(resolve(work,'.opencode/pstack-admission'),{recursive:true});
   await writeFile(resolve(work,'opencode.json'),JSON.stringify({plugins:[cfg.plugin],model:out.model,snapshots:false,share:'disabled',update:'disable'},null,2));
   // Fresh profile read, exact current prices are checked again by the native plugin per request.
   await startNative(work,true);
   // Restart dedicated controller once with the actual server password. DB/config unchanged.
   await stop(controller);controller=(await launch(cfg.controller,['serve','--config',resolve(dir,'controller.json'),'--listen',new URL(controllerURL).host],{...env,FACTORY_OPERATOR_TOKEN:operator,FACTORY_OPENCODE_PASSWORD:password},repo,o=>o.includes('controller listening on')?{}:undefined)).p;
   await atomic(resolve(dir,'host-private.json'),{operator,worker,password,controllerURL,nativeURL});
-  await client.agent.list();for(let i=0;i<100;i++){if((await client.command.list()).data.some(c=>c.name==='pstack-factory-start'))break;await delay(100)}
-  const p=(await client.plugin.list()).data.find(p=>p.id==='pstack.opencode');if(p?.state.status!=='active')throw Error('pstack plugin not active');out.plugin=p;
+  await client.agent.list();
+  out.plugin=await waitForFactoryPlugin(client,{checkpoint:observation=>atomic(resolve(dir,'plugin-readiness.json'),observation)});
   const permissions=[{action:'*',resource:'*',effect:'deny'},{action:'pstack.workflow',resource:'feature',effect:'allow'},{action:'pstack.cancel',resource:'*',effect:'allow'},{action:'pstack.factory',resource:'*',effect:'allow'},{action:'read',resource:work+'/**',effect:'allow'},{action:'read',resource:'*',effect:'allow'},{action:'edit',resource:work+'/**',effect:'allow'},{action:'edit',resource:'*',effect:'allow'},{action:'shell',resource:'*',effect:'allow'}];
   // Kernel mount boundary permits writes only to this code worktree, private native profile and /tmp.
   // Existing tests and provenance are frozen by Factory's independent protected-path check.
@@ -100,7 +103,7 @@ async function runCycle(sequence){
   out.child=child.id;await op('bind-v2',{session_id:child.id,worker_token:worker});await client.session.command({sessionID:child.id,name:'pstack-factory',text:'claim claim-'+sequence});
   phase='native';out.status='running';await cycleSave();await event('native_started',{sequence,model:out.model,worktree:work,job,session:child.id});
   await client.session.command({sessionID:parent.id,name:'pstack-factory-start',text:'cycle-'+sequence});
-  child=await observeResearch({get:()=>client.session.get({sessionID:child.id}),checkpoint:async session=>{out.native_session=safe(session);await atomic(resolve(dir,'native-session.json'),safe(session));await cycleSave()},resources:async()=>{if(!await diskOK())throw Error('Disk resource limit reached')},lease,shouldStop:()=>shutdown,sleep:delay});
+  child=await observeResearch({get:()=>client.session.get({sessionID:child.id}),toolContext:()=>client.session.context({sessionID:child.id}),checkpoint:async session=>{out.native_session=safe(session);await atomic(resolve(dir,'native-session.json'),safe(session));await cycleSave()},resources:async()=>{if(!await diskOK())throw Error('Disk resource limit reached')},lease,shouldStop:()=>shutdown,sleep:delay});
   const context=safe(await client.session.context({sessionID:child.id}));await atomic(resolve(dir,'native-context.json'),context);out.native_session=safe(await client.session.get({sessionID:child.id}));out.usage={cost:out.native_session.cost??null,tokens:out.native_session.tokens??null,model:out.native_session.model??null};
   if(shutdown)throw Error('Operator stopping');if(child.outcome!=='succeeded'){const errors=context.filter(m=>['assistant','idle'].includes(m.type)&&m.error).map(m=>m.error);throw Error(child.outcome?JSON.stringify(errors.length?errors:[{type:'native.failed',message:'Native outcome '+child.outcome}]):'Native execution ended without a terminal outcome')}
   phase='native_shells';await cycleSave();
@@ -111,23 +114,23 @@ async function runCycle(sequence){
   phase='verification';out.status='verifying';await cycleSave();
   // Commit only approved tracked/additional source paths; never ignored data/native configuration.
   const changed=git(work,'status','--porcelain','--untracked-files=all');out.diff_status=changed;
-  if(!changed)throw Error('No implementation/evidence change; choose a concrete experiment or report a data blocker');
+  if(!changed)throw Error('No implementation/evidence change; inspect independent goal feedback and required behavior');
   if(sha(await readFile(resolve(work,'.git')))!==out.git_control_sha256)throw Error('Git ownership scope violation');
   if(!approvedScope(git(work,'diff','--name-only',cfg.initial_base).split('\n').filter(Boolean),template))throw Error('Protected/allowed path scope violation');
   git(work,'add','--',...template.allowed_paths.filter(p=>{try{execFileSync('/usr/bin/test',['-e',resolve(work,p)]);return true}catch{return false}}));
   if(!git(work,'diff','--cached','--name-only'))throw Error('No approved candidate changes');
-  git(work,'commit','-m',goal.id+' research cycle '+sequence+' (independent verification required)');out.candidate=git(work,'rev-parse','HEAD');out.scope_approved=true;
+  git(work,'commit','-m',commitSubject(cfg,goal,sequence));out.candidate=git(work,'rev-parse','HEAD');out.scope_approved=true;
   await client.session.command({sessionID:child.id,name:'pstack-factory',text:'verify verify-'+sequence+' '+out.candidate});await op('advance');
   let verified;while(!shutdown){lease.check();verified=await op('status');if(verified.active_verification_receipt)break;if(verified.state==='blocked')throw Error('Controller verification blocked: '+JSON.stringify(verified));await delay(1500)}
   out.candidate_status=verified;if(verified?.active_verification_receipt?.outcome!=='passed')throw Error('Independent verification failed: '+JSON.stringify(verified));
   await lease.tick(true);
-  await client.session.command({sessionID:child.id,name:'pstack-factory',text:'submit submit-'+sequence+' Bounded research milestone only; standing scientific objective remains unresolved'});
+  await client.session.command({sessionID:child.id,name:'pstack-factory',text:'submit submit-'+sequence+' Bounded verified milestone only; independent whole-goal evaluation still required'});
   let done;while(!shutdown){lease.check();done=await op('status');if(done.state==='done')break;if(done.state==='blocked')throw Error('Controller integration blocked: '+JSON.stringify(done));await delay(1500)}
   if(done?.state!=='done'||done.active_verification_receipt?.outcome!=='passed')throw Error('Independent integration incomplete');
   if(sha(await readFile(done.delivery.destination))!==done.delivery.sha256)throw Error('Delivered archive hash mismatch');
   out.acceptance=done;out.status='accepted';await atomic(resolve(dir,'accepted.json'),done);
   try{out.scientific_blocker=(await readFile(resolve(work,'docs/BLOCKED.md'),'utf8')).slice(0,4000)}catch{}
- }catch(e){out.error=red(String(e)).slice(0,20000);out.failure_kind=out.error.includes('scope violation')?'blocked':classify(out.error,phase);out.status='failed';}
+ }catch(e){out.error=red(String(e)).slice(0,20000);out.failure_kind=e instanceof RepeatedToolFailure?'repair':classify(out.error,phase);if(e instanceof RepeatedToolFailure)out.tool_failure=e.observation;out.status='failed';}
  finally{
   if(lease)await lease.stop();out.phase=phase;
   if(child&&client){try{const s=await client.session.get({sessionID:child.id});out.usage={model:s.model??null,cost:s.cost??null,tokens:s.tokens??null};out.native_session=safe(s);await atomic(resolve(dir,'native-session-final.json'),safe(s));await atomic(resolve(dir,'native-context-final.json'),safe(await client.session.context({sessionID:child.id})))}catch(e){out.accounting_error=red(String(e));out.usage??={cost:null,tokens:null,model:null}}}
@@ -206,6 +209,7 @@ while(!shutdown){
   if(['denied','unavailable','transient'].includes(out.failure_kind)){if(out.checkpoint){state.base=out.checkpoint;delete state.continuation;}state.circuits=failure(state.circuits,out.model,out.failure_kind,Date.now());await event('model_circuit',{model:out.model,failure_kind:out.failure_kind,usage:out.usage??null});}
   else if(out.failure_kind==='repair'){
    state.repair_count++;
+   if(out.tool_failure){state.circuits=failure(state.circuits,out.model,'tool_failure',Date.now());await event('tool_failure_recovery',{sequence:out.sequence,model:out.model,observation:out.tool_failure,usage:out.usage??null});}
    // Retain unaccepted candidate as repair input, not as an accepted/integrated milestone.
    if(out.checkpoint||(out.candidate&&out.scope_approved))state.base=out.checkpoint??out.candidate;
    delete state.continuation;

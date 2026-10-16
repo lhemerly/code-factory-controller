@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {buildResearchContext,createCycleDirectory} from './research-context.mjs';
+import {buildResearchContext,createCycleDirectory,commitSubject,loadGoalEvaluation} from './research-context.mjs';
 const sha=b=>createHash('sha256').update(b).digest('hex');
 async function fixture(t){
  const root=await mkdtemp(join(tmpdir(),'factory-context-'));t.after(()=>rm(root,{recursive:true,force:true}));
@@ -32,6 +32,7 @@ test('newest-first Markdown and stale cache never become next-step directives',a
  const context=await buildResearchContext(f.input);
  assert.match(context.text,new RegExp(f.second));assert.match(context.text,/receipt-7/);assert.match(context.text,/CONTINUATION.md/);
  assert.doesNotMatch(context.text,/OBSOLETE|LATEST RESEARCH|INITIAL ONLY/);assert.match(context.text,/unresolved/);
+ assert.match(context.text,/Use repository-relative paths/);assert.match(context.text,/do not retry that rejected path/);
  assert.equal(context.provenance.legacy_continuation_ignored,true);
 });
 test('repeated admission and restart discover latest completed cycle despite stale last_cycle',async t=>{
@@ -113,4 +114,51 @@ test('stale sequence or duplicate submission cannot overwrite persisted cycle ev
 test('cycle directory width is not a research iteration cap',async t=>{
  const f=await fixture(t);assert.equal(await createCycleDirectory(f.root,1000000),join(f.root,'cycles','1000000'));
  await assert.rejects(createCycleDirectory(f.root,999999),/overlaps persisted history/);
+});
+
+test('owner verifier namespace facts survive admission with provenance and do not grant acceptance',async t=>{
+ const f=await fixture(t);f.input.cfg.data=f.root;await writeFile(join(f.root,'VERIFIER-CONTRACT.md'),'Inputs are mounted at /inputs; use standard temporary directories.');
+ const c=await buildResearchContext(f.input);assert.match(c.text,/VERIFIER NAMESPACE FACTS/);assert.match(c.text,/not an acceptance receipt or permission expansion/);assert.equal(c.provenance.verification_contract_sha256.length,64);
+});
+
+test('approved product commit subject excludes cycle bookkeeping and validates controls',()=>{
+ assert.equal(commitSubject({commit_subject:'Add model-free baselines'},{id:'internal-goal'},3),'Add model-free baselines');
+ assert.equal(commitSubject({},{id:'research'},3),'research research cycle 3 (independent verification required)');
+ for(const title of ['',42,'a\nb','a'.repeat(181)])assert.throws(()=>commitSubject({commit_subject:title},{id:'research'},3),/Invalid approved/);
+});
+
+async function evaluation(f,overrides={}){
+ const stdout=join(f.root,'goal.stdout'),stderr=join(f.root,'goal.stderr');
+ await writeFile(stdout,'');await writeFile(stderr,'AssertionError: Unicode normalization still missing');
+ const receipt={commit:f.first,check_id:'user-visible-behavior',exit_status:1,stdout,stderr,
+  stdout_sha256:sha(await readFile(stdout)),stderr_sha256:sha(await readFile(stderr))};
+ const record={version:1,goal_id:f.input.goal.id,commit:f.first,result:{passed:false,status:'acceptance_failed',commit:f.first,phase:'check_evidence',reason:'command failed',receipts:[receipt]},...overrides};
+ await writeFile(join(f.root,'goal-evaluation.json'),JSON.stringify(record));return {record,receipt};
+}
+test('independent goal failure reaches the next task after restart, distinct from passing cycle tests',async t=>{
+ const f=await fixture(t);await f.cycle(1,f.first);await evaluation(f);
+ const a=await buildResearchContext(f.input),b=await buildResearchContext({...f.input,state:{base:f.first}});
+ assert.equal(a.text,b.text);assert.match(a.text,/INDEPENDENT WHOLE-GOAL/);assert.match(a.text,/Unicode normalization still missing/);
+ assert.match(a.text,/untrusted observations/);assert.match(a.text,/"outcome":"passed"/);
+ assert.equal(a.provenance.goal_evaluation_sha256.length,64);
+});
+test('cross-goal and stale goal evaluations cannot misdirect a later task',async t=>{
+ const f=await fixture(t);await evaluation(f,{goal_id:'foreign-goal'});
+ await assert.rejects(buildResearchContext(f.input),/identity\/result mismatch/);
+ await evaluation(f,{commit:f.second});await assert.rejects(buildResearchContext(f.input),/identity\/result mismatch/);
+});
+test('goal failure logs are digest checked, including stderr',async t=>{
+ const f=await fixture(t);const {receipt}=await evaluation(f);await writeFile(receipt.stderr,'forged repair instructions');
+ await assert.rejects(buildResearchContext(f.input),/log changed/);
+});
+test('unhashed legacy stderr is never forwarded as independent diagnostics',async t=>{
+ const f=await fixture(t);const {record}=await evaluation(f);delete record.result.receipts[0].stderr_sha256;
+ await writeFile(join(f.root,'goal-evaluation.json'),JSON.stringify(record));
+ assert.doesNotMatch((await buildResearchContext(f.input)).text,/Unicode normalization/);
+});
+test('large diagnostic sets remain bounded and omissions explicit after all digests are checked',async t=>{
+ const f=await fixture(t);const {record,receipt}=await evaluation(f);record.result.receipts=Array.from({length:80},()=>receipt);
+ await writeFile(join(f.root,'goal-evaluation.json'),JSON.stringify(record));
+ const e=await loadGoalEvaluation(f.root,f.input.goal,f.first);assert(e.summary.omitted_checks>0);
+ assert(Buffer.byteLength(JSON.stringify(e.summary))<3400);assert(Buffer.byteLength((await buildResearchContext(f.input)).text)<=7900);
 });

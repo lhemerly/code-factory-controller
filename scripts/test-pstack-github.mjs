@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
+import {readFile} from 'node:fs/promises';
+import {parsePullRequest,resolveReviewThreads,WatcherQueryError} from '../vendor/pstack-watch-pr/github.ts';
+const meta=JSON.parse(await readFile(new URL('../vendor/pstack-watch-pr/PROVENANCE.json',import.meta.url)));
+for(const [path,hash] of Object.entries(meta.files))assert.equal(createHash('sha256').update(await readFile(new URL('../vendor/pstack-watch-pr/'+path,import.meta.url))).digest('hex'),hash);
+const context={owner:'owner',repo:'repo',number:1};
+const value={mergeable:'MERGEABLE',mergeStateStatus:'CLEAN',reviewDecision:'',headRefOid:'a'.repeat(40),headRefName:'fix',baseRefName:'main',state:'OPEN',mergedAt:null,isDraft:true};
+assert.equal(parsePullRequest(value,context).headRefOid,value.headRefOid);
+assert.throws(()=>parsePullRequest({...value,state:'unexpected'},context),WatcherQueryError);
+let pages=0;
+const threads=await resolveReviewThreads({reviewThreadPage:async()=>({threads:[],endCursor:++pages===1?'next':null})},context);
+assert.equal(pages,2);assert.deepEqual(threads,[]);
+console.log('Pinned pstack source integrity, exact PR parsing, fail-closed enum and thread pagination passed.');

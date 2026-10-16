@@ -7,6 +7,8 @@ export function freeModels(models) {
     .sort((a,b) => a.id === 'opencode/big-pickle' ? -1 : b.id === 'opencode/big-pickle' ? 1 : a.id.localeCompare(b.id));
 }
 export function classify(text, phase='native') {
+  // The controller's structured test verdict is not an access denial embedded in a task/log.
+  if (phase === 'verification' && /^Error: Independent verification failed: /.test(text)) return 'repair';
   if (/permission.?denied|requires?.?approval|scope violation|ownership.*(?:changed|unknown)|V2 active or unknown shell work|V2 shell.*(?:scope|unknown)/i.test(text)) return 'blocked';
   if (phase === 'verification') return 'repair';
   if (/Factory model has nonzero or unknown pricing/.test(text)) return 'unavailable';
@@ -22,7 +24,7 @@ export function failure(circuits, model, kind, now) {
   const previous=circuits[model]??{};
   const count=previous.kind===kind?(previous.count??0)+1:1;
   // Access denials stay open until explicit operator reset. Do not probe around them.
-  const until=kind==='denied'?Number.MAX_SAFE_INTEGER:now+(kind==='unavailable'?21600000:Math.min(3600000,60000*2**Math.min(count-1,6)));
+  const until=kind==='denied'?Number.MAX_SAFE_INTEGER:now+(kind==='unavailable'?21600000:kind==='tool_failure'?3600000:Math.min(3600000,60000*2**Math.min(count-1,6)));
   return {...circuits,[model]:{kind,count,until}};
 }
 export function recoveryAction(record) {
