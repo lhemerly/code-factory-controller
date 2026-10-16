@@ -11,6 +11,8 @@ pub struct Engine {
     pub gate: tokio::sync::Mutex<()>,
     pub adapter_gate: tokio::sync::Mutex<()>,
     pub wake: tokio::sync::Notify,
+    pub(crate) local_requests:
+        std::sync::Mutex<std::collections::HashMap<String, tokio::sync::watch::Sender<bool>>>,
     _lock: File,
 }
 impl Engine {
@@ -60,8 +62,39 @@ impl Engine {
             gate: tokio::sync::Mutex::new(()),
             adapter_gate: tokio::sync::Mutex::new(()),
             wake: tokio::sync::Notify::new(),
+            local_requests: std::sync::Mutex::new(std::collections::HashMap::new()),
             _lock: lock,
         }))
+    }
+    /// Operator-approved standing objective. Subtask receipts never complete it.
+    pub fn standing_goal(&self, proposed: Option<Value>) -> Result<Value> {
+        self.store.transaction(|tx| {
+            let previous: Option<String> = tx.query_row(
+                "SELECT value FROM metadata WHERE key='standing-goal'", [], |r| r.get(0)
+            ).optional()?;
+            if let Some(goal) = proposed {
+                let keys = ["id", "objective", "completion_criteria", "pause_conditions"];
+                if goal.as_object().is_none_or(|o| o.len() != keys.len() || keys.iter().any(|k| !o.contains_key(*k)))
+                    || !goal["id"].as_str().is_some_and(valid_id)
+                    || !goal["objective"].as_str().is_some_and(|s| !s.is_empty() && s.len() <= 4000)
+                    || ["completion_criteria", "pause_conditions"].iter().any(|key|
+                        !goal[key].as_array().is_some_and(|a| !a.is_empty() && a.len() <= 30 && a.iter().all(|v|
+                            v.as_str().is_some_and(|s| !s.is_empty() && s.len() <= 2000)))) {
+                    bail!("invalid standing goal");
+                }
+                let encoded = serde_json::to_string(&goal)?;
+                if let Some(saved) = &previous {
+                    if serde_json::from_str::<Value>(saved)? != goal {
+                        bail!("standing goal is immutable; use a separately approved project for a changed objective");
+                    }
+                } else {
+                    tx.execute("INSERT INTO metadata(key,value) VALUES('standing-goal',?1)", [&encoded])?;
+                }
+                return Ok(json!({"goal":goal,"status":"unresolved","subtask_acceptance_completes_goal":false}));
+            }
+            Ok(json!({"goal":previous.map(|s| serde_json::from_str::<Value>(&s)).transpose()?,
+                "status":"unresolved","subtask_acceptance_completes_goal":false}))
+        })
     }
     pub fn get(&self, id: &str) -> Result<Job> {
         self.store.transaction(|tx| Store::load(tx, id))
@@ -134,6 +167,27 @@ impl Engine {
         Ok(job)
     }
     pub async fn prepare(&self, id: &str, mode: &str) -> Result<Job> {
+        if ![
+            "manual",
+            "adapter",
+            "plugin",
+            "llama_cpp",
+            crate::opencode_v2::MODE,
+            crate::agy::MODE,
+        ]
+        .contains(&mode)
+        {
+            bail!("unknown execution mode");
+        }
+        if mode == crate::opencode_v2::MODE && self.config.opencode_url.is_none() {
+            bail!("external V2 execution requires a dedicated approved loopback endpoint");
+        }
+        if mode == crate::agy::MODE && self.config.agy.is_none() {
+            bail!("agy not configured");
+        }
+        if mode == "llama_cpp" && self.config.llama_cpp.is_none() {
+            bail!("native llama.cpp not configured");
+        }
         let _gate = self.gate.lock().await;
         let mut job = self.store.transaction(|tx| {
             let mut job = Store::load(tx, id)?;
@@ -167,7 +221,7 @@ impl Engine {
             job.attempt = Some(Attempt {
                 attempt_id: attempt_id.clone(),
                 lease_id: new_id(),
-                session_id: None,
+                session_id: if mode=="llama_cpp" {Some(format!("local-{attempt_id}"))} else if mode==crate::agy::MODE {Some(format!("agy-{attempt_id}"))} else {None},
                 worktree: self.config.data_dir.join("workers").join(&attempt_id),
                 lease_expires_at: (Utc::now() + Duration::seconds(self.config.lease_seconds))
                     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
@@ -177,7 +231,7 @@ impl Engine {
                 message_id: format!("msg_{}", digest(&attempt_id)),
                 session_title: format!("factory-{attempt_id}"),
                 mode: mode.into(),
-                server_url: self.config.opencode_url.clone(),
+                server_url: if mode=="llama_cpp" {self.config.llama_cpp.as_ref().map(|c|c.endpoint.clone())} else {self.config.opencode_url.clone()},
             });
             job.state = "running".into();
             job.attempts += 1;
@@ -189,7 +243,12 @@ impl Engine {
             Ok(job)
         })?;
         self.prepare_worktree(&job).await?;
-        job.attempt.as_mut().unwrap().dispatch_state = "session_pending".into();
+        job.attempt.as_mut().unwrap().dispatch_state = if mode == crate::agy::MODE {
+            "agy_awaiting_run"
+        } else {
+            "session_pending"
+        }
+        .into();
         self.save_if_current(&mut job, "worker worktree ready")?;
         Ok(job)
     }
@@ -244,11 +303,9 @@ impl Engine {
     pub async fn prepare_worktree(&self, job: &Job) -> Result<()> {
         let a = job.attempt.as_ref().context("attempt")?;
         let rework = self.rework_context(job)?;
-        let base = rework
-            .as_ref()
-            .and_then(|r| r["candidate_commit"].as_str())
-            .unwrap_or(&job.input.base_commit);
-        if rework.is_some() {
+        let rework_candidate = rework.as_ref().and_then(|r| r["candidate_commit"].as_str());
+        let base = rework_candidate.unwrap_or(&job.input.base_commit);
+        if rework_candidate.is_some() {
             execution::scope(&self.config.repository, job, base).await?;
         }
         std::fs::create_dir_all(a.worktree.parent().unwrap())?;
@@ -270,6 +327,22 @@ impl Engine {
         Ok(())
     }
     pub fn bind(&self, id: &str, session: &str, token: &str) -> Result<Job> {
+        if self
+            .get(id)?
+            .attempt
+            .as_ref()
+            .is_some_and(|a| a.mode == crate::agy::MODE)
+        {
+            bail!("agy uses controller-owned headless identity; external bind forbidden");
+        }
+        if self
+            .get(id)?
+            .attempt
+            .as_ref()
+            .is_some_and(|a| a.mode == crate::opencode_v2::MODE)
+        {
+            bail!("V2 sessions require observed host bind-v2");
+        }
         if !valid_id(session) || token.len() < 32 {
             bail!("invalid session or capability");
         }
@@ -299,15 +372,45 @@ impl Engine {
         {
             actions.push(OPERATIONS[3]);
         }
-        json!({"state":job.state,"state_revision":job.revision,"current_attempt":job.attempt.as_ref().filter(|a|a.session_id.is_some()).map(|_|job.assignment(&self.config)),"permitted_next_actions":actions,"blockers":job.blocker.iter().collect::<Vec<_>>(),"active_verification_receipt":job.receipt,"delivery_reference":job.delivery.as_ref().and_then(|d|d["reference"].as_str()),"freshness_timestamp":now(),"next_retry_at":job.next_retry_at,"outcome":job.outcome,"candidate_commit":job.candidate,"integrated_commit":job.integrated_commit,"delivery":job.delivery})
+        let mut status = json!({"state":job.state,"state_revision":job.revision,"current_attempt":job.attempt.as_ref().filter(|a|a.session_id.is_some()).map(|_|job.assignment(&self.config)),"permitted_next_actions":actions,"blockers":job.blocker.iter().collect::<Vec<_>>(),"active_verification_receipt":job.receipt,"delivery_reference":job.delivery.as_ref().and_then(|d|d["reference"].as_str()),"freshness_timestamp":now(),"next_retry_at":job.next_retry_at,"outcome":job.outcome,"candidate_commit":job.candidate,"integrated_commit":job.integrated_commit,"delivery":job.delivery});
+        if job
+            .attempt
+            .as_ref()
+            .is_some_and(|a| a.mode == crate::opencode_v2::MODE)
+        {
+            status["execution_policy"] = json!({"mode":crate::opencode_v2::MODE,"models":self.config.policy.models,"free_only":self.config.policy.free_only,"spend_ceiling":self.config.policy.spend_ceiling,"delegation":"unsupported","runtime":"2.0.29"});
+            status["execution_recovery"] = match self.v2_recovery(job) {
+                Ok(value) => value.unwrap_or(Value::Null),
+                Err(_) => {
+                    json!({"execution_stop":{"status":"unknown"},"accounting":{"status":"unknown"},"reason":"Durable recovery evidence unavailable"})
+                }
+            };
+        }
+        if job
+            .attempt
+            .as_ref()
+            .is_some_and(|a| a.mode == crate::agy::MODE)
+        {
+            status["agy_execution"] = self
+                .agy_session(&job.input.job_id)
+                .ok()
+                .flatten()
+                .unwrap_or(Value::Null);
+        }
+        status
     }
     pub fn action(&self, id: &str, action: &str) -> Result<Job> {
-        self.store.transaction(|tx| {
+        let result = self.store.transaction(|tx| {
             let mut j = Store::load(tx, id)?;
             match action {
                 "pause" => {
                     if j.state == "done" {
                         bail!("delivered job cannot pause");
+                    }
+                    if let Some(a) = j.attempt.as_mut().filter(|a| {
+                        a.mode == "llama_cpp" && a.dispatch_state == "native_requesting"
+                    }) {
+                        a.dispatch_state = "native_ready".into();
                     }
                     j.state = "paused".into();
                     j.blocker = Some("operator paused dispatch".into());
@@ -333,6 +436,17 @@ impl Engine {
                     j.blocker = None;
                 }
                 "requeue" => {
+                    crate::agy::check_requeue(tx, &j)?;
+
+                    if let Some(a)=j.attempt.as_ref().filter(|a|a.mode==crate::opencode_v2::MODE) {
+                        let evidence:String=tx.query_row("SELECT value FROM metadata WHERE key=?1",[format!("opencode-v2-recovery:{}",a.attempt_id)],|r|r.get(0))
+                            .context("V2 execution stop and accounting settlement required before requeue")?;
+                        let recovery:Value=serde_json::from_str(&evidence)?;
+                        if recovery["attempt_id"]!=a.attempt_id || recovery["session_id"]!=a.session_id.as_deref().map(Value::from).unwrap_or(Value::Null)
+                            || recovery["execution_stop"]["status"]!="confirmed" || recovery["accounting"]["status"]!="settled_zero" {
+                            bail!("V2 execution stop or accounting unsettled; requeue remains fenced");
+                        }
+                    }
                     if j.attempts >= self.config.max_attempts {
                         bail!("attempt limit exhausted");
                     }
@@ -357,7 +471,11 @@ impl Engine {
             };
             Store::save(tx, &mut j, action)?;
             Ok(j)
-        })
+        });
+        if result.is_ok() && ["pause", "cancel"].contains(&action) {
+            self.cancel_local(id);
+        }
+        result
     }
     pub fn heartbeat(&self, id: &str, attempt: &str) -> Result<()> {
         self.store.transaction(|tx| {
@@ -368,8 +486,12 @@ impl Engine {
             {
                 bail!("stale lease");
             }
+            let existing = chrono::DateTime::parse_from_rfc3339(
+                &j.attempt.as_ref().unwrap().lease_expires_at,
+            )?;
             j.attempt.as_mut().unwrap().lease_expires_at = (Utc::now()
                 + Duration::seconds(self.config.lease_seconds))
+            .max(existing.with_timezone(&Utc))
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
             Store::save(tx, &mut j, "lease renewed")
         })
@@ -387,6 +509,8 @@ impl Engine {
             return Ok(job);
         }
         if let Some(verification_id) = job.verification_pending.clone() {
+            self.require_agy_quiet(&job)?;
+            self.check_v2(&job, true).await?;
             let candidate = job.candidate.clone().context("candidate")?;
             match execution::verify(&self.config, &job, &candidate, &verification_id).await {
                 Ok(receipt) => {
@@ -400,9 +524,14 @@ impl Engine {
                     job.verification_pending = None;
                     self.save_if_current(&mut job, "independent candidate verification completed")?;
                 }
-                Err(_) => {
+                Err(error) => {
                     job.state = "blocked".into();
-                    job.blocker = Some("verifier checkout or environment unavailable".into());
+                    job.blocker = Some(
+                        format!("verification execution unresolved: {error:#}")
+                            .chars()
+                            .take(1000)
+                            .collect(),
+                    );
                     self.save_if_current(&mut job, "verification blocked")?;
                     return Ok(job);
                 }
@@ -415,6 +544,8 @@ impl Engine {
             return Ok(job);
         }
         let candidate = job.candidate.clone().context("candidate")?;
+        self.require_agy_quiet(&job)?;
+        self.check_v2(&job, true).await?;
         if job.integrated_commit.is_none() {
             execution::scope(&self.config.repository, &job, &candidate).await?;
             let current = match execution::git(
@@ -503,6 +634,16 @@ impl Engine {
         Ok(job)
     }
     async fn deliver(&self, job: &mut Job) -> Result<()> {
+        self.require_worker_quiet(job).await?;
+        if !job
+            .receipt
+            .as_ref()
+            .is_some_and(execution::quiescent_receipt)
+        {
+            bail!(
+                "delivery requires actual executor quiescence receipts; legacy/unknown execution needs host review"
+            );
+        }
         let commit = job.integrated_commit.clone().context("integrated commit")?;
         let current = execution::git(
             &self.config.repository,

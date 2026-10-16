@@ -90,6 +90,12 @@ pub struct Config {
     pub lease_seconds: i64,
     pub max_attempts: u32,
     pub opencode_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verifier_executable: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llama_cpp: Option<crate::connector::LlamaCppConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agy: Option<crate::agy::AgyConfig>,
 }
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
@@ -165,6 +171,34 @@ impl Config {
         for model in &self.policy.models {
             if model.split('/').count() != 2 || model.len() > 200 {
                 bail!("invalid model ID");
+            }
+        }
+        if self
+            .verifier_executable
+            .as_ref()
+            .is_some_and(|path| !path.is_absolute())
+        {
+            bail!("verifier executable must be a host-owned absolute path");
+        }
+        if let Some(local) = &self.llama_cpp {
+            local.validate()?;
+            if self.policy.models != [local.identity()]
+                || self.max_workers != 1
+                || local.request_timeout_seconds as i64 >= self.lease_seconds
+            {
+                bail!(
+                    "native local connector requires one worker, exact single-model policy and timeout shorter than lease"
+                );
+            }
+        }
+        if let Some(agy) = &self.agy {
+            agy.validate()?;
+            if self.verifier_executable.is_none()
+                || self.policy.models != [format!("agy/{}", agy.model)]
+                || self.max_workers != 1
+                || agy.timeout_seconds as i64 + 15 >= self.lease_seconds
+            {
+                bail!("agy requires exact model, one worker and timeout shorter than lease");
             }
         }
         if let Some(url) = &self.opencode_url {

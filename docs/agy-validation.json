@@ -1,0 +1,16 @@
+{
+  "scope": "Sanitized compatibility summary; raw native traces and project-specific evidence remain local and are not included in this review.",
+  "qualified_native_version": "1.3.6",
+  "unqualified_native_version": "1.4.0",
+  "fixtures": "Synthetic CLI events with real Linux owned-process supervision, Git worktrees and independent candidate/integration verification.",
+  "observed_native_limits": [
+    "Historical native tool errors and incomplete terminal accounting require separate execution-stop and accounting handling.",
+    "Native shell/tool/terminal/cancel/restart compatibility for agy1.4.0 is not established; its version guard remains closed.",
+    "No claim of measured included quota conversion, billing guarantee, full pstack parity or scientific success."
+  ],
+  "reproduce": [
+    "cargo test --locked --test agy",
+    "cargo test --locked --test process_lifecycle"
+  ],
+  "current_review_validation": "See private-review-validation.md for executed current-revision checks."
+}

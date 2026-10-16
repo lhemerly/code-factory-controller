@@ -123,6 +123,9 @@ impl Engine {
         if !job.active() || !["running", "verifying"].contains(&job.state.as_str()) {
             return fail("stale_lease");
         }
+        if self.check_v2(&job, false).await.is_err() {
+            return fail("policy_denied");
+        }
         if operation != "factory_next_task" {
             let a = job.attempt.as_ref().unwrap();
             if request.job_id.as_deref() != Some(&job.input.job_id)

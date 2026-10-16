@@ -213,57 +213,78 @@ try {
       "Controller killed during real verification; restarting from persisted request.",
     );
   }
-  await op("advance", { job_id: a.job_id });
-  const status = await client.call(
-    "factory_status",
-    { project_id: config.project_id, job_id: a.job_id },
-    ctx,
-  );
-  assert.equal(status.active_verification_receipt.outcome, "passed");
-  assert.equal(status.active_verification_receipt.candidate_commit, candidate);
-  const submit = {
-    ...ids,
-    verification_id: queued.verification_id,
-    change_summary: "Produced result",
-    artifact_manifest: status.active_verification_receipt.artifacts,
-    idempotency_key: "submit",
-  };
-  assert.equal(
-    (await client.call("factory_submit_candidate", submit, ctx)).status,
-    "accepted_for_integration",
-  );
-  await op("advance", { job_id: a.job_id });
-  const done = await client.call(
-    "factory_status",
-    { project_id: config.project_id, job_id: a.job_id },
-    ctx,
-  );
-  assert.equal(done.state, "done");
-  assert.ok(done.delivery_reference);
-  assert.deepEqual(
-    (await client.call("factory_submit_candidate", submit, ctx)).status,
-    "accepted_for_integration",
-  );
-  await assert.rejects(
-    client.call(
-      "factory_submit_candidate",
-      { ...submit, change_summary: "Different" },
-      ctx,
-    ),
-    (e) => e.code === "idempotency_conflict",
-  );
-  if (crash)
+  if (crash) {
+    const blocked = await op("advance", { job_id: a.job_id });
+    assert.equal(blocked.state, "blocked");
+    assert.equal(blocked.delivery, null);
     assert.deepEqual(
-      await client.call(
-        "factory_request_verification",
-        { ...ids, verification_profile_id: "unit", idempotency_key: "verify" },
-        ctx,
-      ),
+      await client.call("factory_request_verification",
+        { ...ids, verification_profile_id: "unit", idempotency_key: "verify" }, ctx),
       queued,
     );
-  console.log(
-    "Published OpenCode plugin contract passed against Rust controller: four tools, exact receipt, delivery, replay and conflict.",
-  );
+    const executions = await op("executions", {});
+    assert.equal(executions.signals_sent, false);
+    assert.equal(executions.effects_replayed, false);
+    let quiescent = false;
+    for (let i = 0; i < 160; i++) {
+      for (const directory of await readdir(join(config.data_dir, "verification-executions"))) {
+        for (const name of await readdir(join(config.data_dir, "verification-executions", directory))) {
+          if (name.endsWith(".process.json")) {
+            const receipt = JSON.parse(await readFile(join(config.data_dir, "verification-executions", directory, name), "utf8"));
+            assert.equal(receipt.termination_reason, "controller_disconnected");
+            quiescent = receipt.quiescent;
+          }
+        }
+      }
+      if (quiescent) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(quiescent, true, "executor did not confirm cleanup after controller death");
+    console.log("Plugin recovery contract passed: request replay preserved, owned work quiescent, uncertain effects fenced; no delivery or automatic rerun.");
+  } else {
+    await op("advance", { job_id: a.job_id });
+    const status = await client.call(
+      "factory_status",
+      { project_id: config.project_id, job_id: a.job_id },
+      ctx,
+    );
+    assert.equal(status.active_verification_receipt.outcome, "passed");
+    assert.equal(status.active_verification_receipt.candidate_commit, candidate);
+    const submit = {
+      ...ids,
+      verification_id: queued.verification_id,
+      change_summary: "Produced result",
+      artifact_manifest: status.active_verification_receipt.artifacts,
+      idempotency_key: "submit",
+    };
+    assert.equal(
+      (await client.call("factory_submit_candidate", submit, ctx)).status,
+      "accepted_for_integration",
+    );
+    await op("advance", { job_id: a.job_id });
+    const done = await client.call(
+      "factory_status",
+      { project_id: config.project_id, job_id: a.job_id },
+      ctx,
+    );
+    assert.equal(done.state, "done");
+    assert.ok(done.delivery_reference);
+    assert.deepEqual(
+      (await client.call("factory_submit_candidate", submit, ctx)).status,
+      "accepted_for_integration",
+    );
+    await assert.rejects(
+      client.call(
+        "factory_submit_candidate",
+        { ...submit, change_summary: "Different" },
+        ctx,
+      ),
+      (e) => e.code === "idempotency_conflict",
+    );
+    console.log(
+      "Published OpenCode plugin contract passed against Rust controller: four tools, exact receipt, delivery, replay and conflict.",
+    );
+  }
   client.dispose();
 } finally {
   server.kill("SIGKILL");

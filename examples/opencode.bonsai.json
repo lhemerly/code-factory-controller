@@ -1,0 +1,58 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "prism-bonsai/bonsai-heretic-v2-27b-ptq1_0",
+  "small_model": "prism-bonsai/bonsai-heretic-v2-27b-ptq1_0",
+  "enabled_providers": [
+    "prism-bonsai"
+  ],
+  "plugin": [],
+  "autoupdate": false,
+  "permission": {
+    "*": "deny",
+    "read": "allow",
+    "edit": "allow",
+    "apply_patch": "allow",
+    "bash": "allow",
+    "glob": "allow",
+    "grep": "allow"
+  },
+  "share": "disabled",
+  "provider": {
+    "prism-bonsai": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Local Prism Bonsai",
+      "options": {
+        "baseURL": "http://127.0.0.1:8080/v1",
+        "timeout": 120000,
+        "includeUsage": true
+      },
+      "models": {
+        "bonsai-heretic-v2-27b-ptq1_0": {
+          "id": "bonsai-heretic-v2-27b-ptq1_0",
+          "name": "Bonsai Heretic v2 27B PTQ1_0 (Prism Vulkan)",
+          "tool_call": true,
+          "reasoning": false,
+          "attachment": false,
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_write": 0
+          },
+          "limit": {
+            "context": 8192,
+            "output": 1024
+          }
+        }
+      }
+    }
+  }
+}

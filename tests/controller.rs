@@ -559,7 +559,7 @@ async fn attempt_history_survives_reassignment() {
     assert_eq!(count, 2);
 }
 #[tokio::test]
-async fn verifier_recovery_uses_new_environments_and_artifacts() {
+async fn completed_verifier_recovery_reuses_exact_receipt_without_reexecuting() {
     let f = Fixture::new().await;
     let j = f.assigned("job", "session", TOKEN).await;
     let c = Fixture::commit(&j, "result.txt", "result").await;
@@ -569,8 +569,8 @@ async fn verifier_recovery_uses_new_environments_and_artifacts() {
     let b = code_factory_controller::execution::verify(&f.config, &j, &c, "logical-verification")
         .await
         .unwrap();
-    assert_ne!(a.environment_id, b.environment_id);
-    assert_ne!(a.artifacts[0].reference, b.artifacts[0].reference);
+    assert_eq!(a.environment_id, b.environment_id);
+    assert_eq!(a.artifacts[0].reference, b.artifacts[0].reference);
     assert_eq!(a.verification_id, b.verification_id);
     assert_eq!(a.candidate_commit, b.candidate_commit);
 }
