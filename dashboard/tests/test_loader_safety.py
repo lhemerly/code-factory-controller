@@ -20,6 +20,21 @@ MIXED = support.FIXTURES / "mixed"
 
 
 class PathSafetyTest(unittest.TestCase):
+    def test_nested_admitted_goal_is_read_within_the_configured_root(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            goal=root/'review-runs'/'batch'
+            goal.mkdir(parents=True)
+            (root/'research-goals').mkdir()
+            (root/'research-goals/launch.json').write_text(json.dumps({'worker_slots':1,'goals':[{'id':'nested','root':str(goal)}]}))
+            (root/'research-goals/dispatcher-state.json').write_text(json.dumps({'goals':{'nested':{'state':'ready'}}}))
+            (goal/'goal.json').write_text(json.dumps({'id':'nested','objective':'Nested review task'}))
+            (goal/'status.json').write_text(json.dumps({'status':'waiting','sequence':0}))
+            raw=loader.load_state(root)
+            self.assertEqual(raw['projects'][0]['dir'],'review-runs/batch')
+            self.assertEqual(raw['projects'][0]['goal']['objective'],'Nested review task')
+            self.assertIn('review-runs/batch/status.json',raw['reads'])
+
     def test_traversal_refused(self):
         for bad in ("../outside.json", "alpha/../../secret", "/etc/passwd", "alpha\\status.json", ""):
             with self.assertRaises(loader.LoaderError, msg=bad):
