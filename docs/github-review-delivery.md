@@ -19,7 +19,7 @@ wires their relevant behavior into Factory rather than starting a second watcher
 Use a dedicated 0700 state directory outside the product checkout. An approved
 binding JSON supplies exact repository ID/name, PR, initial SHA, head/base branch,
 canonical GitHub remote, goal ID/task, allowed/protected paths, ignored authors,
-execution seed and its SHA-256 pins, and publication summary path/forbidden patterns.
+execution seed and its SHA-256 pins, and publication title, summary path and forbidden patterns.
 The binding is immutable. The seed is a reviewed native goal configuration:
 `goal.json`, `supervisor.json`, `job-template.json`, `protected.json`, `verify.py`
 and `trusted/`. It must match a complete approved runtime policy in the existing
@@ -36,7 +36,8 @@ python3 scripts/github-review.py publish --state /private/review --batch <id>
 `reconcile --manifest /approved/launch.json --queue /private/queue` performs one
 complete operator pass: direct intake/admission, or receipt audit/publication once
 the existing queued repair finishes. Existing authorized supervision can invoke it;
-it does not start its own polling loop. Only one repair batch per bound PR can be
+it does not start its own polling loop. Failed test cycles can use the existing
+receipt-checked retry admission; permission/ownership failures remain fenced. Only one repair batch per bound PR can be
 queued at a time.
 
 `--node /absolute/node` selects an already installed runtime. `hold` blocks new

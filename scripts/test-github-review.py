@@ -103,6 +103,11 @@ class Tests(unittest.TestCase):
  def test_second_batch_cannot_compete_for_same_pr(self):
   self.batch();self.remote.data['comments'][0]['body']='New review';key=self.adapter.ingest()
   with self.assertRaises(ValueError):self.adapter.enqueue(key,None,None)
+ def test_reconcile_uses_existing_receipt_retry_gate(self):
+  key=self.batch();root=pathlib.Path(self.tmp.name)/'run';root.mkdir();M.save(root/'status.json',{'current':None,'last_cycle':{'status':'failed'}});M.save(root/'goal.json',{'id':'approved-goal'});s=self.adapter.state();s['batches'][key]['root']=str(root);self.adapter.persist(s);mp=pathlib.Path(self.tmp.name)/'manifest.json';M.save(mp,{})
+  with patch.object(M.D.queue_api,'request_retry',return_value={'id':'exact-receipt'}) as gate:
+   result=self.adapter.reconcile(mp,pathlib.Path(self.tmp.name)/'q');self.assertEqual(result['state'],'retry_queued');self.assertEqual(gate.call_args.args[2],'approved-goal')
+  with patch.object(M.D.queue_api,'request_retry',side_effect=ValueError('Unconfirmed stop')),self.assertRaises(ValueError):self.adapter.reconcile(mp,pathlib.Path(self.tmp.name)/'q')
  def test_real_git_fast_forward_rejects_divergence(self):
   import subprocess
   root=pathlib.Path(self.tmp.name);repo=root/'git';remote=root/'remote.git';repo.mkdir()

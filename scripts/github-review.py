@@ -166,6 +166,10 @@ class Adapter:
    status=read(path)
    if status.get('current'):return {'state':'running','batch':batch['id']}
    if status.get('last_cycle',{}).get('status')=='accepted':return self.publish(batch['id'])
+   if status.get('last_cycle',{}).get('status')=='failed':
+    manifest=read(manifest_path);queue=D.queue_api.Queue(queue_path,save);goal=read(pathlib.Path(batch['root'])/'goal.json')['id']
+    request=D.queue_api.request_retry(queue,manifest,goal,D.inspect_job,D.Locks)
+    return {'state':'retry_queued','batch':batch['id'],'request':request['id']}
    return {'state':'needs_attention','batch':batch['id'],'reason':'Repair lacks an accepted terminal receipt; retain existing evidence'}
   key=self.ingest()
   if key:return self.enqueue(key,manifest_path,queue_path)
