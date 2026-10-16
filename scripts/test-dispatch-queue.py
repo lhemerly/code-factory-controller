@@ -127,4 +127,16 @@ class Tests(unittest.TestCase):
  def test_update_cannot_write_unrelated_files_or_change_goal_configuration(self):
   plan=self.update();target=pathlib.Path(self.goals[0]['root'])/'goal.json';bad=copy.deepcopy(plan);bad['files'][0]['destination']=str(target);bad['manifest']['trusted_files'][str(target)]=bad['files'][0]['sha256']
   with self.assertRaisesRegex(ValueError,'unrelated|permissions'):self.queue.stage(bad)
+ def test_runtime_policy_can_reuse_any_existing_approved_project_profile(self):
+  # Scientific projects may already have different approved read-only Python environments.
+  extra=copy.deepcopy(self.goals[0]);other=self.root/'other-profile';other.mkdir();extra.update(id='other-profile',root=str(other));cfg=Q.read(pathlib.Path(self.goals[0]['root'])/'supervisor.json');cfg['venv']='/already-approved-venv';D.save(other/'supervisor.json',cfg);self.manifest['goals'].append(extra)
+  path=pathlib.Path(self.goals[1]['root'])/'supervisor.json';new=Q.read(path);new['venv']=cfg['venv'];D.save(path,new);self.intent['trusted_files'][str(path)]=Q.sha(path)
+  self.assertEqual(self.enqueue()['input']['goal']['id'],'new')
+  new['native']='/unapproved-native';D.save(path,new);self.intent['trusted_files'][str(path)]=Q.sha(path)
+  with self.assertRaisesRegex(ValueError,'complete approved runtime'):self.enqueue()
+ def test_idle_owner_checks_current_trusted_bytes_before_next_admission(self):
+  d=self.manager();self.enqueue();self.pin.write_text('changed after startup')
+  with self.assertRaisesRegex(ValueError,'pin mismatch'):Q.enroll(self.queue,d,self.path,self.lookup)
+  self.assertEqual(self.calls,[])
+  with self.assertRaisesRegex(ValueError,'pin mismatch'):self.enqueue()
 if __name__=='__main__':unittest.main(verbosity=2)

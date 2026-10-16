@@ -41,6 +41,7 @@ class Queue:
    try:channel.sendto(b'q',str(self.sock))
    except (FileNotFoundError,ConnectionRefusedError,BlockingIOError):pass # Durable intents survive a missing wake-up.
  def enqueue(self,envelope,manifest,lookup):
+  pins(manifest['trusted_files'])
   validate_goal(envelope,manifest,lookup)
   item={'id':digest(envelope),'input':envelope}
   def add(doc):
@@ -81,9 +82,10 @@ def validate_goal(envelope,manifest,lookup):
  required=[root/p for p in ['goal.json','supervisor.json','task.txt','job-template.json','protected.json','controller.json']]
  if any(str(p) not in envelope['trusted_files'] for p in required):raise ValueError('Missing approved goal/configuration pin')
  pins(envelope['trusted_files'])
- cfg=read(root/'supervisor.json');reference=read(pathlib.Path(template['root'])/'supervisor.json')
- for key in ['native','native_sha256','controller','controller_sha256','plugin','plugin_commit','venv','path','ownership_lease_seconds','ownership_heartbeat_seconds','min_free_bytes','max_state_bytes','unavailable_backoff_seconds']:
-  if cfg.get(key)!=reference.get(key):raise ValueError('Queued goal cannot broaden runtime policy: '+key)
+ cfg=read(root/'supervisor.json')
+ keys=['native','native_sha256','controller','controller_sha256','plugin','plugin_commit','venv','path','ownership_lease_seconds','ownership_heartbeat_seconds','min_free_bytes','max_state_bytes','unavailable_backoff_seconds']
+ references=[read(pathlib.Path(existing['root'])/'supervisor.json') for existing in manifest['goals']]
+ if not any(all(cfg.get(key)==reference.get(key) for key in keys) for reference in references):raise ValueError('Queued goal must match one complete approved runtime policy')
  registration=read(root/'controller.json')
  if registration.get('policy',{}).get('free_only') is not True or registration.get('policy',{}).get('spend_ceiling')!=0 or registration.get('max_workers')!=1:raise ValueError('Queued goal must preserve free-only single-worker policy')
  approved=read(root/'goal.json');observed=lookup(manifest['controller'],root/'controller.json')
@@ -164,6 +166,7 @@ def boundary_updates(queue,manifest_path,state_path,locks,crash=None,audit=None)
 
 
 def enroll(queue,dispatcher,manifest_path,lookup):
+ pins(dispatcher.m['trusted_files'])
  if dispatcher.s.get('current'):raise RuntimeError('Cannot enroll during active execution')
  journal_path=queue.root/'enroll-journal.json'
  if journal_path.exists():
