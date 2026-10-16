@@ -53,6 +53,11 @@ impl Fixture {
             lease_seconds: 3600,
             max_attempts: 3,
             opencode_url: None,
+            verifier_executable: Some(std::path::PathBuf::from(env!(
+                "CARGO_BIN_EXE_code-factory-controller"
+            ))),
+            llama_cpp: None,
+            agy: None,
         };
         let engine = Engine::open(config.clone()).unwrap();
         Self {

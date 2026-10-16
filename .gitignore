@@ -6,3 +6,16 @@
 
 __pycache__/
 *.pyc
+
+# Owner-private research profiles and generated execution evidence
+/research-runs/
+/research-goals/
+/spark-continuous/
+/ink-continuous/
+/runtime/
+**/host-private.json
+**/recovery-before-*.sqlite*
+**/recovery-before-native.db*
+*.db
+*.db-wal
+*.db-shm

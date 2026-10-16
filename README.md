@@ -1,8 +1,12 @@
 # Code Factory Controller
 
-A standalone Rust controller for code factories. It turns an approved Git change into an independently verified candidate, a verified integration commit, and a checked local delivery artifact. OpenCode supplies coding sessions; the controller owns durable state and acceptance.
+A standalone Rust controller for code factories. It turns an approved Git change into an independently verified candidate, a verified integration commit, and a checked local delivery artifact. Coding workers run through OpenCode, native local llama.cpp, or the explicit agy connector; the controller owns durable state and acceptance.
 
 The first release targets **Linux**, **SQLite**, **OpenCode 1.19.0**, and **protocol 0.1**. It supports one configured project, up to two coding workers, one verifier at a time, one integration owner, and delivery as an immutable Git archive. It can operate with or without the [OpenCode Factory Plugin](https://github.com/lhemerly/opencode-factory-plugin).
+
+An explicit [OpenCode V2 external-execution mode](docs/opencode-v2-authority.md) supports the project-local pstack adapter on **OpenCode 2.0.29**. OpenCode owns coding execution; this controller keeps evidence, policy, attempt limits and recovery authority. Host-observed `bind-v2` reuses the worker protocol and independent verifier without adding V2 prompt dispatch or a competing scheduler. It requires a separate approved dedicated runtime/configuration and is not enabled by default.
+
+An opt-in [native agy connector](docs/agy-connector.md) supports pinned pstack workflows on agy 1.3.6 with separate process proof and raw token accounting. It is offline-qualified; live Argon execution, workspace trust and billing are not qualified. See [the isolated configuration example](examples/controller.agy.json).
 
 ## What is implemented
 
@@ -79,6 +83,22 @@ export FACTORY_OPERATOR_TOKEN="$(openssl rand -hex 32)"
 
 The token is read from the host environment, never a model-visible tool argument. The operator listener defaults to `127.0.0.1:4317`. Preserve the same token in the operator CLI's environment through your host's secret handling. `FACTORY_OPENCODE_PASSWORD` optionally supplies the dedicated OpenCode server's Basic Auth password; the username is `opencode`.
 
+## Native local llama.cpp connector
+
+Code Factory can execute approved jobs directly against an existing local
+llama.cpp OpenAI-compatible endpoint, without OpenCode or its plugin. The native
+adapter runs a bounded coding tool loop in the assigned worktree; model proposals
+never bypass independent verification, integration or checked delivery.
+
+Use the [native connector guide](docs/native-llama-cpp.md) and
+[Bonsai configuration](examples/controller.llama-cpp.bonsai.json). Core model
+identities and limits are configurable; this example selects the user's existing
+Bonsai Heretic v2 27B PTQ1_0 on Prism Vulkan. It adds no process installation,
+model download, credentials or remote fallback.
+
+The earlier [OpenCode provider profiles](docs/local-bonsai.md) remain an optional,
+separate deployment path. They are not the native connector.
+
 ## Admit and run approved work
 
 With the controller running, open its terminal interface in another terminal using the same `FACTORY_OPERATOR_TOKEN`:
@@ -121,7 +141,7 @@ Copy [the job example](examples/job.json), set the full base commit, describe th
 
 `run` starts or reconciles the existing adapter attempt. The controller creates its worktree and session, sends the approved brief, inspects the session and Git HEAD, independently verifies a candidate, integrates it, verifies the integrated result and checks the delivered archive. The session's text is feedback, not acceptance evidence.
 
-The operator CLI also supports `list`, `prepare`, `bind`, `heartbeat`, `advance`, `pause`, `resume`, `cancel`, `abort` and `requeue`. Supply operation-specific JSON with `--input`; use `--url` for another loopback port. `abort` resolves and fences the previous worker. `requeue` refuses unresolved sessions, integration plans and exhausted attempt budgets. Paused or cancelled jobs stop controller dispatch and handoffs; the operator chooses when to abort an active coding session.
+The operator CLI also supports `list`, `prepare`, `bind`, `heartbeat`, `advance`, `pause`, `resume`, `cancel`, `abort` and `requeue`. Supply operation-specific JSON with `--input`; use `--url` for another loopback port. `abort` resolves and fences the previous worker. In V2 mode it fences the job and expires its lease before native interruption, then records execution stop separately from accounting; a confirmed stop with unknown/violating usage stays blocked and cannot requeue. See `status.execution_recovery` and the [V2 recovery contract](docs/opencode-v2-authority.md). `requeue` refuses unresolved sessions, integration plans and exhausted attempt budgets. Paused or cancelled jobs stop controller dispatch and handoffs; the operator chooses when to abort an active coding session.
 
 The read operations `overview`, `events` and `log` supply the terminal interface. They require the operator capability. `overview` re-audits completed deliveries; `events` accepts `after_seq`, optional `job_id`, and a limit up to 200; `log` accepts `job_id` and `artifact_reference` and returns a digest-checked tail of at most 32 KiB.
 
@@ -196,10 +216,38 @@ The runner records the canonical repository and effective verifier environment, 
 
 A milestone's `done` means its declared independent checks and archive delivery passed. It does not mean the broad backend goal is finished. Backend acceptance must include the required CPU compatibility and Vulkan execution checks in its final contract.
 
+## Verifier-owned process completion
+
+Trusted verification commands now run through a Linux subreaper/pidfd helper.
+A zero root exit cannot pass while owned descendants remain live; executor
+observations remain separate from program/model stdout. Completed verification
+reuses checked receipts, while interrupted/unknown effects block automatic replay.
+See [lifecycle guarantees, recovery limits and tests](docs/verifier-process-lifecycle.md).
+This does not establish process ownership for externally managed OpenCode tools or
+24/7 readiness.
+
+## Trace-driven improvement (offline)
+
+The [trace ledger and readiness plan](docs/trace-ledger.md) provides bounded,
+provenance-preserving import and deterministic replay of explicitly reviewed
+sanitized summaries. It keeps Code Factory, research, historical and mock outcomes
+separate, flags lifecycle/reporting inconsistencies, and never treats traces as
+job authorization. It makes no provider calls and does not enable unattended
+operation. Run its offline regressions with `python3 scripts/test-trace-ledger.py`.
+
 ## Validation and scope
 
 The test suite covers durable replay, restart recovery, independent verification, altered evidence, stale leases, protected paths, parallel integration and conflicts, provider policy, operator isolation, timeouts and adapter reconciliation. The independently packaged plugin's contract also passes against the Rust service.
 
 Live Big Pickle runs completed a bounded hardening change in the plugin repository both without and with plugin assistance. Both passed trusted candidate and integrated checks, delivered a checked archive, and survived a controller-process restart. The source repository was used in a disposable clone; the delivered change is a local artifact, not a claim that its upstream branch was changed. See [validation evidence and limits](docs/validation.md).
 
-Multiple-project scheduling, PR/deployment delivery adapters, paid models, distributed workers and a web dashboard remain outside this release. [MIT license](LICENSE); [dependency and contract notices](THIRD_PARTY_NOTICES.md).
+An opt-in [foreground shared research launcher](docs/research-dispatch.md) coordinates a fixed approved goal list with one shared worker slot and independent acceptance. Dynamic multi-project scheduling, PR/deployment delivery adapters, paid models, distributed workers and a web dashboard remain outside this release. [MIT license](LICENSE); [dependency and contract notices](THIRD_PARTY_NOTICES.md).
+
+## Private review snapshot
+
+This review includes the independent verifier process lifecycle, explicit native
+OpenCode2.0.29 execution observation, owned background-shell waiting/cancellation,
+and the opt-in foreground shared research dispatcher. See [current checks and
+limits](docs/private-review-validation.md). Runtime profiles, credentials, native
+conversations, private data and research results are intentionally excluded.
+A reviewed branch is not a release, deployment or scientific-success claim.

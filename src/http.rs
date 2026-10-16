@@ -221,6 +221,7 @@ async fn operator(
     let id = body["job_id"].as_str().unwrap_or("");
     let result: anyhow::Result<Value> = async {
         Ok(match op.as_str() {
+            "standing-goal" => s.engine.standing_goal(body.get("goal").cloned())?,
             "admit" => serde_json::to_value(
                 s.engine
                     .admit(serde_json::from_value(body.clone())?)
@@ -236,6 +237,10 @@ async fn operator(
                 body["session_id"].as_str().unwrap_or(""),
                 body["worker_token"].as_str().unwrap_or(""),
             )?)?,
+            "bind-v2" => serde_json::to_value(s.engine.bind_v2(
+                id, body["session_id"].as_str().unwrap_or(""),
+                body["worker_token"].as_str().unwrap_or(""),
+            ).await?)?,
             "status" => s.engine.status(&s.engine.reconcile_delivery(id)?),
             "advance" => serde_json::to_value(s.engine.advance(id).await?)?,
             "run" => serde_json::to_value(
@@ -243,6 +248,14 @@ async fn operator(
                     .run(id, body["mode"].as_str().unwrap_or("adapter"))
                     .await?,
             )?,
+            "executions" => execution::execution_status(&s.engine.config)?,
+            "agy-recover-unknown" => s.engine.recover_agy_unknown(serde_json::from_value(body.clone())?).await?,
+            "agy-history" => s.engine.agy_history(id)?,
+            "agy-budget" => s.engine.set_agy_attempt_budget(serde_json::from_value(body.clone())?)?,
+            "agy-preflight" => s.engine.agy_preflight().await?,
+            "agy-session" => serde_json::to_value(s.engine.agy_session(id)?)?,
+            "agy-reconcile" => serde_json::to_value(s.engine.reconcile_agy(id).await?)?,
+            "local-session" => serde_json::to_value(s.engine.local_session(id)?)?,
             "abort" => serde_json::to_value(s.engine.abort_worker(id).await?)?,
             "heartbeat" => {
                 s.engine

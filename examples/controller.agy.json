@@ -1,0 +1,65 @@
+{
+  "project_id": "agy-approved-project",
+  "repository": "/absolute/path/approved-repository",
+  "data_dir": "/absolute/path/controller-data",
+  "delivery_dir": "/absolute/path/deliveries",
+  "integration_ref": "refs/heads/factory-integration",
+  "profiles": [
+    {
+      "id": "application-checks",
+      "version": "1",
+      "timeout_seconds": 300,
+      "checks": [
+        {
+          "id": "dependencies",
+          "argv": [
+            "npm",
+            "ci",
+            "--no-audit",
+            "--no-fund"
+          ]
+        },
+        {
+          "id": "unit-tests",
+          "argv": [
+            "npm",
+            "test"
+          ]
+        },
+        {
+          "id": "type-checks",
+          "argv": [
+            "npm",
+            "run",
+            "check"
+          ]
+        }
+      ]
+    }
+  ],
+  "policy": {
+    "models": [
+      "agy/gemini-4-argon-high"
+    ],
+    "free_only": true,
+    "spend_ceiling": 0,
+    "data_approved": true,
+    "cooldown_seconds": 60
+  },
+  "max_workers": 1,
+  "lease_seconds": 2100,
+  "max_attempts": 3,
+  "opencode_url": null,
+  "verifier_executable": "/absolute/path/code-factory-controller",
+  "agy": {
+    "executable": "/absolute/path/agy",
+    "home": "/absolute/path/agy-home",
+    "adapter_repository": "/absolute/path/agy-pstack",
+    "adapter_commit": "c19e5642f7c35a0ca2a0dcbed0b96f4860047502",
+    "model": "gemini-4-argon-high",
+    "workflow": "poteto-mode",
+    "timeout_seconds": 1800,
+    "expected_tool_permission": "always-proceed",
+    "included_quota_approved": true
+  }
+}

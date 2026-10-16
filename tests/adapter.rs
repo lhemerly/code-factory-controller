@@ -23,6 +23,9 @@ async fn health() -> Json<Value> {
     Json(json!({"healthy":true,"version":"1.19.0"}))
 }
 async fn provider(State(s): State<Mock>) -> Json<Value> {
+    if let Some(catalog) = s.data.lock().unwrap().get("catalog") {
+        return Json(catalog.clone());
+    }
     Json(
         json!({"all":[{"id":"opencode","models":{"big-pickle":{"status":"active","cost":{"input":if s.paid{1}else{0},"output":0,"cache":{"read":0,"write":0}}}}}]}),
     )
@@ -46,8 +49,15 @@ async fn messages(State(s): State<Mock>) -> Json<Value> {
 async fn statuses() -> Json<Value> {
     Json(json!({"session-adapter":{"type":"idle"}}))
 }
-async fn runtime_config() -> Json<Value> {
-    Json(json!({"small_model":"opencode/big-pickle"}))
+async fn runtime_config(State(s): State<Mock>) -> Json<Value> {
+    Json(
+        s.data
+            .lock()
+            .unwrap()
+            .get("runtime")
+            .cloned()
+            .unwrap_or(json!({"small_model":"opencode/big-pickle"})),
+    )
 }
 async fn tools() -> Json<Value> {
     Json(json!(["bash", "read", "edit", "task", "factory_status"]))
@@ -85,7 +95,7 @@ async fn prompt(
             .await
             .unwrap();
     }
-    let mut assistant = json!({"info":{"role":"assistant","providerID":"opencode","modelID":"big-pickle","cost":0,"time":{"completed":1}},"parts":[{"type":"text","text":"done"}]});
+    let mut assistant = json!({"info":{"role":"assistant","providerID":body["model"]["providerID"],"modelID":body["model"]["modelID"],"cost":0,"time":{"completed":1}},"parts":[{"type":"text","text":"done"}]});
     if s.provider_error {
         assistant["info"]["error"] =
             json!({"name":"APIError","data":{"statusCode":410,"message":"model deprecated"}});
@@ -94,7 +104,8 @@ async fn prompt(
         json!([{"info":{"id":body["messageID"],"role":"user"},"parts":[]},assistant]);
     Json(Value::Null)
 }
-async fn abort() -> Json<Value> {
+async fn abort(State(s): State<Mock>) -> Json<Value> {
+    s.data.lock().unwrap()["aborted"] = json!(true);
     Json(json!(true))
 }
 async fn setup(
@@ -110,6 +121,15 @@ async fn setup_case(
     idle_no_commit: bool,
     repair_fixture: bool,
 ) -> (Fixture, Arc<Engine>, Mock, tokio::task::JoinHandle<()>) {
+    setup_profile(paid, provider_error, idle_no_commit, repair_fixture, false).await
+}
+async fn setup_profile(
+    paid: bool,
+    provider_error: bool,
+    idle_no_commit: bool,
+    repair_fixture: bool,
+    local: bool,
+) -> (Fixture, Arc<Engine>, Mock, tokio::task::JoinHandle<()>) {
     let f = Fixture::new().await;
     let state = Mock {
         data: Arc::new(Mutex::new(
@@ -120,6 +140,12 @@ async fn setup_case(
         idle_no_commit,
         tools: Arc::new(Mutex::new(None)),
     };
+    if local {
+        let mut data = state.data.lock().unwrap();
+        data["runtime"] =
+            serde_json::from_str(include_str!("../examples/opencode.bonsai.json")).unwrap();
+        data["catalog"] = json!({"all":[{"id":"prism-bonsai","models":{"bonsai-heretic-v2-27b-ptq1_0":{"status":"active","cost":{"input":0,"output":0,"cache":{"read":0,"write":0}}}}}]});
+    }
     let router = Router::new()
         .route("/global/health", get(health))
         .route("/provider", get(provider))
@@ -138,6 +164,13 @@ async fn setup_case(
     config.data_dir = f.temp.path().join("adapter-controller");
     config.delivery_dir = f.temp.path().join("adapter-delivery");
     config.opencode_url = Some(url);
+    if local {
+        let example: code_factory_controller::model::Config =
+            serde_json::from_str(include_str!("../examples/controller.bonsai.json")).unwrap();
+        example.validate().unwrap();
+        config.policy = example.policy;
+        config.max_workers = example.max_workers;
+    }
     if repair_fixture {
         config.profiles[0].checks[0].argv = vec![
             "/bin/sh".into(),
@@ -352,5 +385,112 @@ async fn worker_key_cannot_call_operator_api() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
+    h.abort();
+}
+
+#[tokio::test]
+async fn local_bonsai_profile_dispatches_exact_identity_and_delivers() {
+    let (_f, e, s, h) = setup_profile(false, false, false, false, true).await;
+    e.run("job", "adapter").await.unwrap();
+    let attempt = e.get("job").unwrap().attempt.unwrap();
+    assert_eq!(
+        attempt.model.as_deref(),
+        Some("prism-bonsai/bonsai-heretic-v2-27b-ptq1_0")
+    );
+    assert_eq!(
+        s.data.lock().unwrap()["prompt"]["model"],
+        json!({"providerID":"prism-bonsai","modelID":"bonsai-heretic-v2-27b-ptq1_0"})
+    );
+    for _ in 0..4 {
+        e.adapter_tick("job").await.unwrap();
+        e.advance("job").await.unwrap();
+    }
+    assert_eq!(e.get("job").unwrap().state, "done");
+    h.abort();
+}
+#[tokio::test]
+async fn missing_local_model_waits_without_remote_fallback() {
+    let (_f, e, s, h) = setup_profile(false, false, false, false, true).await;
+    s.data.lock().unwrap()["catalog"]["all"][0]["models"]["bonsai-heretic-v2-27b-ptq1_0"]["status"] =
+        json!("deprecated");
+    e.run("job", "adapter").await.unwrap();
+    assert_eq!(e.get("job").unwrap().state, "retry_wait");
+    assert!(s.tools.lock().unwrap().is_none());
+    h.abort();
+}
+#[tokio::test]
+async fn local_bonsai_identity_and_positive_cost_are_fenced() {
+    for (field, value) in [("modelID", json!("other-model")), ("cost", json!(0.01))] {
+        let (_f, e, s, h) = setup_profile(false, false, false, false, true).await;
+        e.run("job", "adapter").await.unwrap();
+        s.data.lock().unwrap()["messages"][1]["info"][field] = value;
+        e.adapter_tick("job").await.unwrap();
+        assert_eq!(e.get("job").unwrap().state, "blocked");
+        assert_eq!(s.data.lock().unwrap()["aborted"], true);
+        h.abort();
+    }
+}
+#[tokio::test]
+async fn local_bonsai_abort_fences_attempt() {
+    let (_f, e, s, h) = setup_profile(false, false, false, false, true).await;
+    e.run("job", "adapter").await.unwrap();
+    let job = e.abort_worker("job").await.unwrap();
+    assert_eq!(job.state, "blocked");
+    assert_eq!(job.attempt.unwrap().dispatch_state, "resolved");
+    assert_eq!(s.data.lock().unwrap()["aborted"], true);
+    h.abort();
+}
+
+#[tokio::test]
+async fn local_bonsai_rejects_remote_helper_and_nonzero_catalog_prices() {
+    for remote_helper in [true, false] {
+        let (_f, e, s, h) = setup_profile(false, false, false, false, true).await;
+        if remote_helper {
+            s.data.lock().unwrap()["runtime"]["small_model"] = json!("opencode/big-pickle");
+        } else {
+            s.data.lock().unwrap()["catalog"]["all"][0]["models"]["bonsai-heretic-v2-27b-ptq1_0"]
+                ["cost"]["cache"]["read"] = json!(1);
+        }
+        e.run("job", "adapter").await.unwrap();
+        assert_eq!(e.get("job").unwrap().state, "blocked");
+        assert!(s.tools.lock().unwrap().is_none());
+        h.abort();
+    }
+}
+
+#[tokio::test]
+async fn idle_and_model_completed_do_not_override_active_or_unknown_tool_state() {
+    for state in ["running", "pending", "unknown"] {
+        let (_f, e, s, h) = setup(false, false, false).await;
+        e.run("job", "adapter").await.unwrap();
+        s.data.lock().unwrap()["messages"][1]["parts"] =
+            json!([{"type":"tool","tool":"bash","state":{"status":state}}]);
+        e.adapter_tick("job").await.unwrap();
+        let observed = e.get("job").unwrap();
+        assert!(observed.candidate.is_none() && observed.verification_pending.is_none());
+        assert_eq!(observed.state, "running");
+        s.data.lock().unwrap()["messages"][1]["parts"][0]["state"]["status"] = json!("completed");
+        e.adapter_tick("job").await.unwrap();
+        assert!(e.get("job").unwrap().candidate.is_some());
+        h.abort();
+    }
+}
+
+#[tokio::test]
+async fn late_active_tool_state_blocks_delivery_even_after_candidate_acceptance() {
+    let (_f, e, s, h) = setup(false, false, false).await;
+    e.run("job", "adapter").await.unwrap();
+    e.adapter_tick("job").await.unwrap();
+    e.advance("job").await.unwrap();
+    e.adapter_tick("job").await.unwrap();
+    assert_eq!(
+        e.get("job").unwrap().outcome.as_deref(),
+        Some("accepted_for_integration")
+    );
+    s.data.lock().unwrap()["messages"][1]["parts"] =
+        json!([{"type":"tool","tool":"bash","state":{"status":"running"}}]);
+    let blocked = e.advance("job").await.unwrap();
+    assert_eq!(blocked.state, "blocked");
+    assert!(blocked.delivery.is_none());
     h.abort();
 }

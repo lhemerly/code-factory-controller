@@ -1,8 +1,14 @@
 pub mod adapter;
+pub mod agy;
+pub mod agy_stream;
+pub mod connector;
 pub mod engine;
 pub mod execution;
 pub mod http;
+pub mod local_agent;
 pub mod model;
+pub mod opencode_v2;
 pub mod protocol;
 pub mod store;
+pub mod supervisor;
 pub mod tui;

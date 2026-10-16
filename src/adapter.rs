@@ -72,20 +72,108 @@ impl OpenCode {
         Ok(())
     }
 }
+fn tool_observations_terminal(messages: &Value) -> bool {
+    messages.as_array().is_some_and(|messages| {
+        messages.iter().all(|message| {
+            message["parts"].as_array().is_some_and(|parts| {
+                parts.iter().all(|part| {
+                    part["type"] != "tool"
+                        || matches!(
+                            part["state"]["status"].as_str(),
+                            Some("completed" | "error")
+                        )
+                })
+            })
+        })
+    })
+}
 impl Engine {
+    pub(crate) async fn require_worker_quiet(&self, job: &Job) -> Result<()> {
+        self.require_agy_quiet(job)?;
+        self.check_v2(job, true).await?;
+        let Some(attempt) = job
+            .attempt
+            .as_ref()
+            .filter(|a| ["adapter", "plugin"].contains(&a.mode.as_str()))
+        else {
+            return Ok(());
+        };
+        let adapter = OpenCode::new(attempt.server_url.as_deref().context("OpenCode endpoint")?)?;
+        let session = attempt.session_id.as_deref().context("OpenCode session")?;
+        let messages = adapter.inspect(&attempt.worktree, session).await?;
+        let statuses = adapter
+            .call("/session/status", &attempt.worktree, None)
+            .await?;
+        let idle = statuses
+            .get(session)
+            .is_none_or(|status| status["type"] == "idle");
+        let completed = messages
+            .as_array()
+            .and_then(|messages| {
+                messages
+                    .iter()
+                    .rev()
+                    .find(|m| m["info"]["role"] == "assistant")
+            })
+            .is_some_and(|m| m["info"]["time"]["completed"].is_number());
+        if !idle || !completed || !tool_observations_terminal(&messages) {
+            bail!("OpenCode runtime has active or unknown tool work; no new delivery");
+        }
+        Ok(())
+    }
     pub async fn run(&self, id: &str, mode: &str) -> Result<Job> {
-        if !["adapter", "plugin"].contains(&mode) {
+        let mode = if mode == "adapter"
+            && self.config.opencode_url.is_none()
+            && self.config.llama_cpp.is_some()
+        {
+            "llama_cpp"
+        } else {
+            mode
+        };
+        if !["adapter", "plugin", "llama_cpp", crate::agy::MODE].contains(&mode) {
             bail!("unknown adapter mode");
         }
-        if self.config.opencode_url.is_none() {
+        if !["llama_cpp", crate::agy::MODE].contains(&mode) && self.config.opencode_url.is_none() {
             bail!("OpenCode adapter endpoint not configured");
         }
         let job = self.get(id)?;
-        let job = if job.state == "queued" {
+        let mut job = if job.state == "queued" {
             self.prepare(id, mode).await?
         } else {
             job
         };
+        if job
+            .attempt
+            .as_ref()
+            .is_some_and(|a| a.mode == crate::agy::MODE)
+            && mode != crate::agy::MODE
+        {
+            bail!("agy execution requires explicit agy mode");
+        }
+        if job
+            .attempt
+            .as_ref()
+            .is_some_and(|a| a.mode == crate::agy::MODE && a.dispatch_state == "agy_awaiting_run")
+        {
+            if job.state != "running" || !job.active() {
+                bail!("agy prepared attempt is not active");
+            }
+            self.renew_prepared_agy_lease(&mut job)?;
+            job.attempt.as_mut().unwrap().dispatch_state = "session_pending".into();
+            self.save_if_current(
+                &mut job,
+                "operator explicitly enabled prepared agy execution",
+            )?;
+        }
+        if job
+            .attempt
+            .as_ref()
+            .is_some_and(|a| ["llama_cpp", crate::agy::MODE].contains(&a.mode.as_str()))
+        {
+            // Inference belongs to the durable scheduler, not an operator connection.
+            self.wake.notify_one();
+            return Ok(job);
+        }
         self.adapter_tick(&job.input.job_id).await?;
         self.get(id)
     }
@@ -156,6 +244,25 @@ impl Engine {
         Ok(None)
     }
     pub async fn adapter_tick(&self, id: &str) -> Result<()> {
+        if self
+            .get(id)?
+            .attempt
+            .as_ref()
+            .is_some_and(|a| a.mode == crate::agy::MODE)
+        {
+            return self.agy_tick(id).await;
+        }
+        if self
+            .get(id)?
+            .attempt
+            .as_ref()
+            .is_some_and(|a| a.mode == "llama_cpp")
+        {
+            // Keep native request/tool state out of every OpenCode/HTTP caller's future.
+            let tick: std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> =
+                Box::pin(self.local_tick(id));
+            return tick.await;
+        }
         let _adapter_gate = self.adapter_gate.lock().await;
         let mut job = self.get(id)?;
         if job.state == "retry_wait" {
@@ -379,7 +486,14 @@ impl Engine {
         let completed = assistants
             .last()
             .is_some_and(|m| m["info"]["time"]["completed"].is_number());
-        if a.mode == "adapter" && sent && idle && completed && job.candidate.is_none() {
+        let tools_terminal = tool_observations_terminal(&messages);
+        if a.mode == "adapter"
+            && sent
+            && idle
+            && completed
+            && tools_terminal
+            && job.candidate.is_none()
+        {
             let candidate = execution::git(&a.worktree, &["rev-parse", "HEAD"]).await?;
             if candidate == job.input.base_commit {
                 job.state = "blocked".into();
@@ -405,6 +519,9 @@ impl Engine {
             )?;
         }
         if a.mode == "adapter"
+            && idle
+            && completed
+            && tools_terminal
             && job
                 .candidate_receipt
                 .as_ref()
@@ -427,7 +544,23 @@ impl Engine {
         if job.state == "done" {
             bail!("delivered job cannot abort");
         }
+        if job
+            .attempt
+            .as_ref()
+            .is_some_and(|a| a.mode == crate::agy::MODE)
+        {
+            return self.abort_agy(id).await;
+        }
+        if job
+            .attempt
+            .as_ref()
+            .is_some_and(|a| a.mode == crate::opencode_v2::MODE)
+        {
+            return self.abort_v2(id).await;
+        }
         if let Some(a) = &job.attempt
+            && a.mode != "llama_cpp"
+            && a.mode != crate::opencode_v2::MODE
             && let (Some(url), Some(session)) = (&a.server_url, &a.session_id)
         {
             OpenCode::new(url)?.abort(&a.worktree, session).await?;
@@ -439,6 +572,9 @@ impl Engine {
         job.state = "blocked".into();
         job.blocker = Some("previous worker aborted and fenced".into());
         self.save_if_current(&mut job, "operator resolved previous worker")?;
+        if job.attempt.as_ref().is_some_and(|a| a.mode == "llama_cpp") {
+            self.cancel_local(id);
+        }
         Ok(job)
     }
 }

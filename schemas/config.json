@@ -3,6 +3,16 @@
   "title": "Config",
   "type": "object",
   "properties": {
+    "agy": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AgyConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "data_dir": {
       "type": "string"
     },
@@ -15,6 +25,16 @@
     "lease_seconds": {
       "type": "integer",
       "format": "int64"
+    },
+    "llama_cpp": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LlamaCppConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "max_attempts": {
       "type": "integer",
@@ -46,6 +66,12 @@
     },
     "repository": {
       "type": "string"
+    },
+    "verifier_executable": {
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "additionalProperties": false,
@@ -62,6 +88,53 @@
     "max_attempts"
   ],
   "$defs": {
+    "AgyConfig": {
+      "type": "object",
+      "properties": {
+        "adapter_commit": {
+          "type": "string"
+        },
+        "adapter_repository": {
+          "type": "string"
+        },
+        "executable": {
+          "type": "string"
+        },
+        "expected_tool_permission": {
+          "type": "string"
+        },
+        "home": {
+          "type": "string"
+        },
+        "included_quota_approved": {
+          "description": "Operator policy approval, NOT a measured cost or automatic quota attestation.",
+          "type": "boolean"
+        },
+        "model": {
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "workflow": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "executable",
+        "home",
+        "adapter_repository",
+        "adapter_commit",
+        "model",
+        "workflow",
+        "timeout_seconds",
+        "expected_tool_permission",
+        "included_quota_approved"
+      ]
+    },
     "Check": {
       "type": "object",
       "properties": {
@@ -89,6 +162,53 @@
       "required": [
         "id",
         "argv"
+      ]
+    },
+    "LlamaCppConfig": {
+      "type": "object",
+      "properties": {
+        "context_tokens": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "max_transcript_bytes": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "max_turns": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "model": {
+          "description": "Exact alias advertised by the existing local server, not a model path.",
+          "type": "string"
+        },
+        "output_tokens": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "request_timeout_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "endpoint",
+        "model",
+        "context_tokens",
+        "output_tokens",
+        "request_timeout_seconds",
+        "max_turns",
+        "max_transcript_bytes"
       ]
     },
     "ModelPolicy": {

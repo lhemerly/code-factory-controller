@@ -6,6 +6,31 @@ The OpenCode adapter uses the pinned HTTP API, not terminal scraping. Its persis
 
 Main and helper models must be on the approved allowlist and have zero input, output and cache prices in the runtime catalog. Assistant message identities and reported costs are checked as well. Catalog checks cannot guarantee provider availability or freeze a provider's external pricing; actual API failures are retained and classified. Promotional models can disappear between catalog refresh and serving. No paid fallback exists in this release.
 
+## Native local inference and coding
+
+The `llama_cpp` configuration selects a first-class native connector. The typed
+`LocalInference` boundary in `src/connector.rs` probes an existing loopback server
+catalog and streams exact-model responses with bounded bytes and time. It never
+starts a model process or falls back to another provider. `src/local_agent.rs`
+executes the coding loop directly, without OpenCode, using host-defined file and
+candidate-proposal tools. Each scheduler tick executes one bounded turn.
+
+Session history, token usage and turn count are snapshotted in SQLite together
+with job revision changes. Request and tool intents precede their effects. A
+restart between intent and result fences the attempt; explicit operator abort
+resolves it rather than replaying uncertain writes or commits. Ready turns resume
+from their saved transcript. Abort/cancel/pause drop active inference; Git finish
+work has a bounded timeout and cancellation guard. File operations cannot traverse
+symlinks or Git metadata and writes are checked against allowed/protected paths.
+No model-controlled shell, executable, network tool or verification command exists.
+
+`finish_candidate` asks the controller to create a local Git commit and check its
+scope. It only queues independent verification. The same existing candidate,
+integration and delivery machinery owns acceptance. Failed checks require an
+explicit abort/requeue, retaining existing repair provenance. The native path
+reports zero model API spend and keeps token counts where reported; it does not
+account for energy/hardware or attest to the server's binary/model checksum.
+
 ## Persistence
 
 The database uses WAL, synchronous FULL and immediate transactions. It contains jobs, historical attempts, verification receipts, integration/delivery steps, an append-only transition journal, worker grants, idempotency records and configuration metadata. A process lock prevents two owners of the same database. Git ref updates additionally compare the expected previous head.
@@ -20,7 +45,7 @@ The approved profile is snapshotted per job. A configuration fingerprint prevent
 
 Candidate commits must resolve exactly, descend from the approved base, and change only allowed paths. Protected paths cannot change. Profile commands come from the host configuration, not worker arguments. Every criterion must reference existing check IDs; its evidence includes results and the exact commit.
 
-Each verifier invocation uses a fresh clean clone and unique execution/log identities, including after restart. Orphaned checks from a killed controller cannot share the next verifier's checkout or log file. Commands receive a minimal environment with PATH and CI, without inherited controller or integration credentials. They run with a time limit and bounded log growth. Timeout terminates the process group and records failed evidence. These controls do not provide an OS sandbox; trusted checks must remain verification-only and execution isolation is a deployment responsibility.
+Each new logical verifier invocation uses a fresh clean clone and unique execution/log identities. A completed logical verification reuses its integrity-checked receipt after restart without re-execution; an unfinished or corrupt intent fences new verifier effects until host reconciliation. Orphaned checks from a killed controller cannot be silently replaced with another execution. Commands receive a minimal environment with PATH and CI, without inherited controller or integration credentials. They run through a dedicated process-local Linux subreaper/pidfd helper with a time limit and bounded retained logs. Root exit zero is insufficient if owned descendants remain live. Cleanup signals only kernel-proven current children through pidfds, never stored numeric PIDs or process groups. [Executor lifecycle and recovery details](verifier-process-lifecycle.md) describe bounded guarantees and gaps. These controls do not provide an OS sandbox; trusted checks must remain verification-only and execution isolation is a deployment responsibility.
 
 Receipts record profile version/digest, environment identity, Git version, OS/architecture, clean-start status, command exit statuses, feature evidence and artifact digests. Dependency versions belong to the verified commit's lockfiles and captured installation/check logs. “Clean” describes the checkout before checks; builds can generate files afterward.
 

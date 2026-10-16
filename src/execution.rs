@@ -117,63 +117,220 @@ pub async fn clean_clone(repository: &Path, path: &Path, commit: &str) -> Result
     Ok(())
 }
 async fn check(
-    argv: &[String],
-    cwd: &Path,
-    log: &Path,
-    seconds: u64,
-    stdout: Option<&Path>,
-    commit: &str,
-) -> Result<i32> {
-    let err = File::create(log)?;
-    let out = if let Some(stdout) = stdout {
-        File::create(stdout)?
-    } else {
-        err.try_clone()?
-    };
-    let mut command = Command::new(&argv[0]);
-    command
-        .args(&argv[1..])
-        .current_dir(cwd)
+    executable: &Path,
+    plan: &crate::supervisor::Plan,
+    plan_path: &Path,
+) -> Result<crate::supervisor::ProcessReceipt> {
+    crate::supervisor::write_json(plan_path, plan)?;
+    let mut child = Command::new(executable)
+        .arg("verifier-supervisor")
+        .arg("--plan")
+        .arg(plan_path)
         .env_clear()
         .env(
             "PATH",
             std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into()),
         )
-        .env("CI", "1")
-        .env("FACTORY_VERIFICATION_COMMIT", commit)
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(out))
-        .stderr(Stdio::from(err))
-        .kill_on_drop(true);
-    #[cfg(unix)]
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        // The helper must survive controller loss long enough to clean its own
+        // descendants. EOF of this pipe is its kernel-observed cancellation.
+        .kill_on_drop(false)
+        .spawn()?;
+    let control = child.stdin.take().context("supervisor control pipe")?;
+    let status = tokio::time::timeout(Duration::from_secs(plan.seconds + 5), child.wait()).await;
+    drop(control);
+    let status = status.context("supervisor deadline exceeded; execution unresolved")??;
+    if !status.success() {
+        bail!("supervisor failed; execution outcome unknown");
+    }
+    let receipt: crate::supervisor::ProcessReceipt = crate::supervisor::read_json(&plan.receipt)?;
+    if receipt.execution_id != plan.execution_id
+        || receipt.version != 1
+        || receipt.observer != "linux_subreaper_waitpid_pidfd"
+        || !receipt.quiescent
     {
-        command.process_group(0);
+        bail!("supervisor identity/quiescence unconfirmed; execution unresolved");
     }
-    let mut child = command.spawn()?;
-    let pid = child.id();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(seconds);
-    loop {
-        if let Some(status) = child.try_wait()? {
-            return Ok(status.code().unwrap_or(-1));
+    Ok(receipt)
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct VerificationRecord {
+    binding: String,
+    receipt: Receipt,
+    receipt_sha256: String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VerificationIntent {
+    version: u32,
+    execution_id: String,
+    binding: String,
+    project_id: String,
+    job_id: String,
+    verification_id: String,
+    commit: String,
+    profile: Profile,
+}
+fn verification_binding(
+    project: &str,
+    job: &str,
+    verification: &str,
+    commit: &str,
+    profile: &Profile,
+) -> Result<String> {
+    Ok(digest(serde_json::to_vec(&serde_json::json!([
+        project,
+        job,
+        verification,
+        commit,
+        profile
+    ]))?))
+}
+fn checked_cached(path: &Path, config: &Config, expected: Option<&str>) -> Result<Receipt> {
+    let intent: VerificationIntent = crate::supervisor::read_json(&path.join("intent.json"))?;
+    let binding = verification_binding(
+        &intent.project_id,
+        &intent.job_id,
+        &intent.verification_id,
+        &intent.commit,
+        &intent.profile,
+    )?;
+    let record: VerificationRecord = crate::supervisor::read_json(&path.join("receipt.json"))?;
+    let receipt = &record.receipt;
+    if intent.version != 2
+        || !valid_id(&intent.execution_id)
+        || !valid_id(&intent.job_id)
+        || !valid_id(&intent.verification_id)
+        || !valid_commit(&intent.commit)
+        || !valid_id(&intent.profile.id)
+        || !valid_id(&intent.profile.version)
+        || !(1..=100).contains(&intent.profile.checks.len())
+        || !(1..=3600).contains(&intent.profile.timeout_seconds)
+        || intent
+            .profile
+            .checks
+            .iter()
+            .any(|check| !valid_id(&check.id) || check.argv.is_empty())
+        || intent.project_id != config.project_id
+        || path.file_name().and_then(|s| s.to_str()) != Some(binding.as_str())
+        || intent.binding != binding
+        || record.binding != binding
+        || expected.is_some_and(|value| value != binding)
+        || digest(serde_json::to_vec(receipt)?) != record.receipt_sha256
+        || receipt.verification_id != intent.verification_id
+        || receipt.candidate_commit != intent.commit
+        || receipt.verification_profile_id != intent.profile.id
+        || receipt.profile_version != intent.profile.version
+        || receipt.config_digest != digest(serde_json::to_vec(&intent.profile)?)
+        || receipt.environment_id
+            != format!("clean-{}-{}", intent.verification_id, intent.execution_id)
+        || !receipt.clean_checkout
+        || !quiescent_receipt(receipt)
+        || receipt.commands.len() != intent.profile.checks.len()
+        || receipt.artifacts.len() != intent.profile.checks.len()
+    {
+        bail!("verification execution intent/directory/receipt binding invalid");
+    }
+    let checks = receipt.environment["checks"]
+        .as_array()
+        .context("executor checks")?;
+    for (index, check) in intent.profile.checks.iter().enumerate() {
+        let plan: crate::supervisor::Plan =
+            crate::supervisor::read_json(&path.join(format!("{}.plan.json", digest(&check.id))))?;
+        let process_path = path.join(format!("{}.process.json", digest(&check.id)));
+        let process: crate::supervisor::ProcessReceipt =
+            crate::supervisor::read_json(&process_path)?;
+        let embedded: crate::supervisor::ProcessReceipt =
+            serde_json::from_value(checks[index]["executor"].clone())?;
+        let log_name = format!(
+            "{}-{}-{}.log",
+            intent.verification_id,
+            intent.execution_id,
+            digest(&check.id)
+        );
+        let log = config.data_dir.join("artifacts").join(&log_name);
+        let expected_stdout = check
+            .result_contract
+            .as_ref()
+            .map(|_| log.with_extension("stdout"));
+        if !valid_id(&plan.execution_id)
+            || process.execution_id != plan.execution_id
+            || process != embedded
+            || !process.quiescent
+            || plan.argv != check.argv
+            || plan.seconds != intent.profile.timeout_seconds
+            || plan.commit != intent.commit
+            || plan.receipt != process_path
+            || plan.cwd
+                != config.data_dir.join("verifier").join(format!(
+                    "{}-{}",
+                    intent.verification_id, intent.execution_id
+                ))
+            || plan.log != log
+            || plan.stdout != expected_stdout
+            || checks[index]["check_id"] != check.id
+            || checks[index]["commit"] != intent.commit
+            || receipt.commands[index].command != check.argv.join(" ")
+            || receipt.commands[index].exit_status != process.root_exit_status.unwrap_or(-1)
+            || receipt.artifacts[index].reference != format!("artifact:{log_name}")
+            || checks[index]["evidence"] != serde_json::to_value(&receipt.artifacts[index])?
+        {
+            bail!("cached check belongs to another execution or approved plan");
         }
-        let output_size = std::fs::metadata(log)?.len()
-            + stdout
-                .map(|path| std::fs::metadata(path).map(|m| m.len()))
-                .transpose()?
-                .unwrap_or(0);
-        if tokio::time::Instant::now() >= deadline || output_size > 1_048_576 {
-            #[cfg(unix)]
-            if let Some(pid) = pid {
-                unsafe {
-                    libc::kill(-(pid as i32), libc::SIGKILL);
-                }
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(&log)?;
+        if !file.metadata()?.is_file() {
+            bail!("cached log must be regular");
+        }
+        let mut bytes = vec![];
+        file.take(2_100_001).read_to_end(&mut bytes)?;
+        if bytes.len() > 2_100_000 || digest(bytes) != receipt.artifacts[index].sha256 {
+            bail!("cached verification log integrity mismatch");
+        }
+    }
+    Ok(record.receipt)
+}
+/// Requires executor observations on every check, not model-authored stdout.
+pub fn quiescent_receipt(receipt: &Receipt) -> bool {
+    receipt.environment["checks"]
+        .as_array()
+        .is_some_and(|checks| {
+            !checks.is_empty()
+                && checks.len() == receipt.commands.len()
+                && checks.iter().all(|check| {
+                    serde_json::from_value::<crate::supervisor::ProcessReceipt>(
+                        check["executor"].clone(),
+                    )
+                    .is_ok_and(|executor| {
+                        executor.version == 1
+                            && executor.observer == "linux_subreaper_waitpid_pidfd"
+                            && executor.quiescent
+                    })
+                })
+        })
+}
+/// Read-only diagnostics. Recorded numeric PIDs are never signalled here or on recovery.
+pub fn execution_status(config: &Config) -> Result<serde_json::Value> {
+    let root = config.data_dir.join("verification-executions");
+    let mut records = vec![];
+    if root.exists() {
+        for entry in std::fs::read_dir(root)?.take(4097) {
+            let entry = entry?;
+            if records.len() >= 4096 {
+                bail!("execution ledger capacity exceeded; host retention review required");
             }
-            child.kill().await.ok();
-            child.wait().await.ok();
-            return Ok(-1);
+            let terminal = checked_cached(&entry.path(), config, None).is_ok();
+            records.push(serde_json::json!({"execution_key":entry.file_name().to_string_lossy(),"terminal_receipt":terminal,
+                "status":if terminal {"recorded_quiescent"} else {"outcome_unknown_requires_host_review"}}));
         }
-        tokio::time::sleep(Duration::from_millis(25)).await;
     }
+    Ok(serde_json::json!({"executions":records,"signals_sent":false,"effects_replayed":false}))
 }
 fn validate_observations(
     value: &serde_json::Value,
@@ -209,7 +366,47 @@ pub async fn verify(
     verification_id: &str,
 ) -> Result<Receipt> {
     ensure_commit(&config.repository, commit).await?;
+    let binding = verification_binding(
+        &config.project_id,
+        &job.input.job_id,
+        verification_id,
+        commit,
+        &job.profile,
+    )?;
+    let ledger = config.data_dir.join("verification-executions");
+    std::fs::create_dir_all(&ledger)?;
+    let record_dir = ledger.join(&binding);
+    if record_dir.exists() {
+        return checked_cached(&record_dir, config, Some(&binding)).context(
+            "verification outcome unknown or evidence corrupt; no automatic effect replay",
+        );
+    }
+    // The controller serializes verification. Fail closed on any unfinished
+    // historical launch rather than guessing whether its old processes survived.
+    for (count, entry) in std::fs::read_dir(&ledger)?.enumerate() {
+        if count >= 4096 {
+            bail!("execution ledger capacity exceeded; host retention review required");
+        }
+        checked_cached(&entry?.path(), config, None).context(
+            "earlier verification execution unresolved; host review required before new effects",
+        )?;
+    }
+    std::fs::create_dir(&record_dir)?;
+    File::open(&ledger)?.sync_all()?;
     let execution_id = new_id();
+    crate::supervisor::write_json(
+        &record_dir.join("intent.json"),
+        &VerificationIntent {
+            version: 2,
+            execution_id: execution_id.clone(),
+            binding: binding.clone(),
+            project_id: config.project_id.clone(),
+            job_id: job.input.job_id.clone(),
+            verification_id: verification_id.into(),
+            commit: commit.into(),
+            profile: job.profile.clone(),
+        },
+    )?;
     let checkout = config
         .data_dir
         .join("verifier")
@@ -232,16 +429,28 @@ pub async fn verify(
             .result_contract
             .as_ref()
             .map(|_| log.with_extension("stdout"));
-        let code = check(
-            &c.argv,
-            &checkout,
-            &log,
-            job.profile.timeout_seconds,
-            stdout.as_deref(),
-            commit,
+        let plan = crate::supervisor::Plan {
+            execution_id: new_id(),
+            argv: c.argv.clone(),
+            cwd: checkout.clone(),
+            log: log.clone(),
+            seconds: job.profile.timeout_seconds,
+            stdout: stdout.clone(),
+            commit: commit.into(),
+            receipt: record_dir.join(format!("{}.process.json", digest(&c.id))),
+        };
+        let executable = config
+            .verifier_executable
+            .clone()
+            .map(Ok)
+            .unwrap_or_else(std::env::current_exe)?;
+        let executor = check(
+            &executable,
+            &plan,
+            &record_dir.join(format!("{}.plan.json", digest(&c.id))),
         )
-        .await
-        .unwrap_or(-1);
+        .await?;
+        let code = executor.root_exit_status.unwrap_or(-1);
         let mut observations = None;
         let mut evidence_error = None;
         if let (Some(contract), Some(stdout)) = (&c.result_contract, &stdout) {
@@ -269,7 +478,7 @@ pub async fn verify(
                 std::fs::remove_file(stdout)?;
             }
         }
-        let verified = code == 0 && evidence_error.is_none();
+        let verified = code == 0 && executor.passed() && evidence_error.is_none();
         passed &= verified;
         File::open(&log)?.sync_all()?;
         File::open(log.parent().unwrap())?.sync_all()?;
@@ -278,7 +487,7 @@ pub async fn verify(
             reference: format!("artifact:{}", log.file_name().unwrap().to_string_lossy()),
             sha256: digest(bytes),
         };
-        let mut feature = serde_json::json!({"check_id":c.id,"exit_status":code,"evidence":artifact,"commit":commit,"verified":verified});
+        let mut feature = serde_json::json!({"check_id":c.id,"exit_status":code,"evidence":artifact,"commit":commit,"verified":verified,"executor":executor});
         if c.result_contract.is_some() {
             feature["observations"] = serde_json::json!(observations);
             feature["evidence_error"] = serde_json::json!(evidence_error);
@@ -308,6 +517,17 @@ pub async fn verify(
         feature_map: serde_json::json!(feature_map),
         environment: serde_json::json!({"os":std::env::consts::OS,"architecture":std::env::consts::ARCH,"git":git(&config.repository,&["--version"]).await?,"dependency_lock":"recorded in verified commit","inherited_environment":false,"checks":features}),
     };
+    if !quiescent_receipt(&receipt) {
+        bail!("verification ownership evidence incomplete");
+    }
+    crate::supervisor::write_json(
+        &record_dir.join("receipt.json"),
+        &VerificationRecord {
+            binding,
+            receipt: receipt.clone(),
+            receipt_sha256: digest(serde_json::to_vec(&receipt)?),
+        },
+    )?;
     std::fs::remove_dir_all(checkout)?;
     Ok(receipt)
 }

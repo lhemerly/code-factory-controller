@@ -15,6 +15,16 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Command {
+    #[command(hide = true)]
+    AgySupervisor {
+        #[arg(long)]
+        plan: PathBuf,
+    },
+    #[command(hide = true)]
+    VerifierSupervisor {
+        #[arg(long)]
+        plan: PathBuf,
+    },
     /// Submit approved work and watch jobs, verification and delivery.
     Tui {
         #[arg(long, default_value = "http://127.0.0.1:4317")]
@@ -28,6 +38,25 @@ enum Command {
         /// Print a terminal preview instead of opening an interactive terminal.
         #[arg(long)]
         snapshot: bool,
+    },
+    /// Audit one persisted job and delivered archive offline; never dispatches work.
+    Inspect {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        job: String,
+    },
+    /// Read or record a durable standing goal offline; never dispatches work.
+    Goal {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        input: Option<PathBuf>,
+    },
+    /// Inspect installed agy version and existing policy without submitting inference.
+    AgyPreflight {
+        #[arg(long)]
+        config: PathBuf,
     },
     Serve {
         #[arg(long)]
@@ -49,10 +78,23 @@ enum Command {
         output: PathBuf,
     },
 }
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Command::AgySupervisor { plan } = &cli.command {
+        return code_factory_controller::supervisor::run_worker(plan);
+    }
+    if let Command::VerifierSupervisor { plan } = &cli.command {
+        return code_factory_controller::supervisor::run(plan);
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run(cli))
+}
+async fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Command::AgySupervisor { .. } => unreachable!("handled before runtime initialization"),
+        Command::VerifierSupervisor { .. } => unreachable!("handled before runtime initialization"),
         Command::Tui {
             url,
             goal_state,
@@ -60,6 +102,30 @@ async fn main() -> Result<()> {
             snapshot,
         } => {
             code_factory_controller::tui::run(url, goal_state, demo, snapshot).await?;
+        }
+        Command::Inspect { config, job } => {
+            let engine = Engine::open(Config::load(&config)?)?;
+            let saved = engine.reconcile_delivery(&job)?;
+            println!("{}", serde_json::to_string_pretty(&engine.status(&saved))?);
+        }
+        Command::Goal { config, input } => {
+            let engine = Engine::open(Config::load(&config)?)?;
+            let proposed = input
+                .map(|path| -> Result<serde_json::Value> {
+                    Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+                })
+                .transpose()?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&engine.standing_goal(proposed)?)?
+            );
+        }
+        Command::AgyPreflight { config } => {
+            let engine = Engine::open(Config::load(&config)?)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&engine.agy_preflight().await?)?
+            );
         }
         Command::Serve { config, listen } => {
             if !matches!(listen.ip(),IpAddr::V4(ip)if ip.is_loopback())

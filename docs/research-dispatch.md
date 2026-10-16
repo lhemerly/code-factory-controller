@@ -1,0 +1,149 @@
+# Foreground shared research launcher
+
+`scripts/research-dispatch.py` operates a fixed, owner-approved list of existing
+research cycle hosts. Native OpenCode owns model execution; Code Factory remains
+the authority for admission, permission, candidate/integration receipts, delivery
+and recovery. Dispatcher state is a scheduling cursor and a cache of independently
+audited milestones. It cannot turn a worker's prose or pstack ledger into a receipt.
+No service, updater, global OpenCode configuration or provider credentials are
+installed or changed by this launcher.
+
+Run with an absolute, reviewed manifest:
+
+```sh
+python3 scripts/research-dispatch.py run --manifest /absolute/launch.json --resume
+python3 scripts/research-dispatch.py status --manifest /absolute/launch.json
+```
+
+`--resume` is an explicit owner operation. It checks stopped-attempt evidence,
+resumes paused roots through the existing locked control command, and can hand off
+an exact previously recorded idle supervisor process. The process identity includes
+PID, boot ID, start ticks, UID and expected command arguments; the goal must be idle
+and paused. It sends TERM only to that matching idle owner and waits for its exit.
+It never installs, reloads or disables its old service. Old service startup hashes
+remain unchanged, so do not restart that historical service against changed source.
+
+The manifest supplies one `worker_slots`, distinct `root` and `repository` paths,
+exact `cycle_command` arrays ending in `--one-cycle`, a controller binary supporting
+`inspect`, `state`, `pool_lock`, optional `circuits_file`, and goal `acceptance`
+contracts. `trusted_files` SHA256 pins are mandatory for the owner CLI and checked
+before resume has any effect. Changed manifests fail closed after the first run;
+acceptance-policy changes require an explicit reviewed migration, never deleting
+state to reset an uncertain execution. Repositories and state roots cannot overlap
+other goals. The supplied real-goal manifest belongs outside this source checkout.
+
+A nonblocking global flock prevents duplicate pool owners; a per-goal flock prevents
+racing another host/control command. Both locks are inherited by the active cycle
+host so a dispatcher crash does not release ownership while that host is alive.
+The dispatcher persists admission intent before spawning and the child's process
+identity immediately afterward. A restart with a live owner refuses duplication;
+an uncertain admission or missing cleanup requires inspection. A completed host
+handoff is recovered from its existing result without dispatching a second cycle.
+Every stored milestone is re-audited against the real controller and delivered
+archive on restart, including milestones for goals still under research. Tampered
+receipts, changed milestone identity and changed final-check output block progress.
+
+There is one shared worker slot. Eligible goals alternate after a cycle completes
+or records a blocker, and a capacity-blocked goal yields to the other. Scheduling
+is nonpreemptive: a productive cycle has no elapsed-research timeout or iteration
+limit. Ownership renews rather than expiring productive work. Startup/HTTP bounds,
+independent verifier bounds and explicit owner-stop cleanup bounds are separate
+operational safeguards. Ctrl+C or TERM asks the owned host to stop and fence its
+native execution, waits for cleanup, and preserves uncertain state for audit.
+Do not start individual hosts alongside the pool or stop arbitrary processes to
+force a new admission.
+
+Both goals share model quota/denial circuit observations. Native OpenCode2.0.29
+selects Big Pickle first, then another active, enabled model with all advertised
+input/output/cache prices exactly zero; the plugin rechecks request pricing.
+Explicit denials remain fenced. No paid fallback exists. Each cycle retains native
+usage, cache fields, model/session/job IDs, code/data provenance, commands, negative
+results and Code Factory receipts. Missing accounting remains unknown. A fresh
+attempt needs a positively stopped prior execution and a new admission/grant.
+
+A passing delivered patch is a milestone. Whole-goal completion additionally calls
+the existing `goal-acceptance.py` implementation in a fresh checkout of the exact
+integrated commit, under a separate host-approved scientific completion contract.
+Checks must return exact-commit structured evidence and receipts. Missing checks
+leave the goal unresolved; worker-authored claims, unit tests and reused weak-label
+metric gains cannot complete it. Scientific check definitions cannot safely be
+invented before the required data and acceptance protocol exist.
+
+Verification:
+
+```sh
+python3 scripts/test-research-dispatch.py
+cargo build --locked
+python3 scripts/test-dispatch-cli.py
+```
+
+The first suite includes actual flock/process ownership, TERM cleanup, restart,
+quota and independent-check tests, with injected cycle/controller responses where
+explicitly named. The second executes the actual CLI for two temporary Git goals
+with deterministic fake providers, the real controller, candidate and integration
+verification, checked archives, independent goal checks, restart without duplicate
+submission and tamper rejection. It makes no model calls and does not establish
+live native routing, production scientific success or unattended availability.
+
+## Terminal model turns and background research
+
+A terminal native model turn may still have owned background shell evaluations.
+The cycle host now observes the exact native location's shell inventory and waits
+for those evaluations to become terminal before candidate verification. Resources
+and ownership renewal remain active; there is no elapsed research cutoff. The
+controller accepts completed shell records only with terminal status, completion
+time and matching scope. Running, malformed or foreign records still block checks.
+The shell query uses the V2 `location[directory]` parameter.
+
+On explicit abort, the controller may stop a running background shell only when
+its native ID is linked to a shell tool record in the exact bound session export
+and its cwd is inside the owned worktree. It then re-observes native quiet state.
+Unknown/foreign shells are never killed by inference or an operator assertion.
+Actual OpenCode2.0.29 shell create/wait/delete and OS exit are exercised by
+`test-native-shell-contract.mjs` without model calls, in addition to mocked
+controller regressions for terminal history, uncertain work and ownership.
+
+Inconclusive results, worker-authored blocker prose, no-change attempts and failed
+candidates continue with useful experiments/negative controls and independent
+verification, rather than a cosmetic documentation repair or automatic success.
+Only genuine permission/resource/ownership violations stop safely. Native evidence
+and the host-approved whole-goal scientific contract still decide acceptance.
+
+`reconcile-stopped-v2.mjs` is an explicit, locked owner recovery operation for an
+already stopped failed attempt. It restores the same isolated native profile for
+observation/control only, asks the real controller to confirm the exact stopped
+session and accounting, stops the recovery servers, and writes a separate
+reconciled result. Original failed evidence stays immutable. A retained scoped
+candidate is unaccepted repair input; grants and receipts are never transferred.
+The dispatcher independently rechecks failed-attempt stop IDs through `inspect`.
+
+An implementation-only pinned repair can be activated with explicit
+`--policy-migration /absolute/reviewed-migration.json`. The migration anchors the
+previous manifest to the saved digest, validates every new pin and rejects any
+change to goals, paths, commands, pricing, ownership or acceptance contracts.
+Per-root lifecycle migrations likewise allow only the pinned controller binary
+path/hash to change. Never clear an unsafe current state to make a new run fit.
+
+## Portable installation and local-only state
+
+The Rust controller and fake-provider dispatcher tests do not require OpenCode.
+For the opt-in native research host, separately obtain the exact OpenCode2.0.29
+runtime, the reviewed pstack adapter, Python environment, bubblewrap and approved
+input data. Their absolute locations and hashes belong in an owner-private
+`supervisor.json`, not a committed machine configuration. Nothing downloads or
+installs these dependencies at runtime.
+
+Set `FACTORY_OPENCODE_V2_CLIENT` to the `dist/promise/index.js` file of an installed
+`@opencode/client@2.0.29`. The loader accepts paths with spaces. Its convenience
+default is an `opencode-pstack` checkout beside this repository with that pinned
+client installed; set the environment variable for any other layout. The native
+shell contract test additionally accepts the absolute runtime binary as its first
+argument. It creates a disposable profile and executes only local sleep/printf
+commands, with no model calls.
+
+Keep goal roots, native profiles, databases, transcripts, private capabilities,
+model outputs, datasets and delivery archives outside the source checkout (for
+example under an owner-private `research-runs/` root). Review and pin the actual
+project manifest before enabling inference; this repository includes no live
+launch manifest, user service or automatic research activation. Whole-goal
+scientific acceptance requires an independently approved domain protocol.

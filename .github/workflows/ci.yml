@@ -1,5 +1,8 @@
 name: Verify controller
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
 permissions:
   contents: read
 jobs:
@@ -15,13 +18,23 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      - run: python3 scripts/test-trace-ledger.py
       - run: python3 scripts/test-goal-runner.py
       - run: python3 scripts/test-goal-acceptance.py
       - run: python3 scripts/test-cli-updater.py
+      - run: python3 scripts/test-research-dispatch.py
+      - run: node scripts/test-continuous-ownership.mjs
+      - run: node scripts/test-free-model-policy.mjs
+      - name: Test local Bonsai OpenCode transport (mock inference only)
+        run: |
+          npm install --ignore-scripts --no-audit --no-fund --prefix "$RUNNER_TEMP/bonsai-runtime" opencode-linux-x64-baseline@1.19.0
+          python3 scripts/test-bonsai-protocol.py --opencode "$RUNNER_TEMP/bonsai-runtime/node_modules/opencode-linux-x64-baseline/bin/opencode"
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
       - run: cargo build --locked
+      - name: Exercise two-goal owner CLI (fake providers, real verification)
+        run: python3 scripts/test-dispatch-cli.py
       - run: cargo run --locked -- schemas --output schemas
       - run: git diff --exit-code -- schemas
       - name: Load independent plugin consumer
