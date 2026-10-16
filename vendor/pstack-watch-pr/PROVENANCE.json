@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/cursor/plugins",
+  "commit": "99743e9c151c8537cbbf1f98bb38f34ef3368453",
+  "upstream_path": "pstack/skills/poteto-mode/scripts/watch-pr",
+  "license": "MIT",
+  "files": {
+    "github.ts": "a605b8531468dbe4c07b93663c0993a9c11dc7e9179adde970f5c740396451d9",
+    "types.ts": "0cac435294dc85ce1ba755e8e67f6c5ab163dfa252f2722d6e3a2d68c58fec59",
+    "github.test.ts": "70c9f03d8738228763846f2abdd8c7de7be68dba3035041482386a69cbf5639b",
+    "LICENSE": "bc957ca6bee02792566a1a028d105e02e247c6e77cf057061674273da77b200e",
+    "fakes.test-helper.ts": "cf0c5ee61b4a73444c1b775cfb6c81a40d312e055dd21a1f5eae6276e54de13f"
+  },
+  "changes": "None. Factory wrapper reuses GhGitHubReader and resolveReviewThreads; REST supplement supplies stable review IDs, edit versions, repository IDs and full comment pagination."
+}
