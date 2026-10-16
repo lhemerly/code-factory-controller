@@ -3,6 +3,8 @@
 Each research admission rebuilds its prompt from the exact selected Git commit and
 fresh offline Factory inspection of completed cycles. It discovers cycle records
 again on restart instead of trusting `last_cycle` or cached `continuation` text.
+Exclusive cycle directory creation refuses stale sequence reuse before overwriting
+any retained evidence.
 The three most recent outcomes and latest accepted milestone identify receipt IDs,
 candidates, structured check counts, ownership stop status and accounting status.
 Acceptance must agree with the saved receipt and delivered archive hash. A stale

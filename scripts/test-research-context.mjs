@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {buildResearchContext} from './research-context.mjs';
+import {buildResearchContext,createCycleDirectory} from './research-context.mjs';
 const sha=b=>createHash('sha256').update(b).digest('hex');
 async function fixture(t){
  const root=await mkdtemp(join(tmpdir(),'factory-context-'));t.after(()=>rm(root,{recursive:true,force:true}));
@@ -99,4 +99,18 @@ test('integrated receipt may verify a merge commit while preserving original can
  const record={...c.record,candidate:f.first,acceptance:structuredClone(c.status)};
  await writeFile(join(c.dir,'result.json'),JSON.stringify(record));f.input.state.base=f.second;
  assert.match((await buildResearchContext(f.input)).text,/independently accepted software milestone/);
+});
+
+test('stale sequence or duplicate submission cannot overwrite persisted cycle evidence',async t=>{
+ const f=await fixture(t);const c=await f.cycle(7,f.second);const saved=await readFile(join(c.dir,'result.json'),'utf8');
+ await assert.rejects(createCycleDirectory(f.root,7),/overlaps persisted history/);
+ await assert.rejects(createCycleDirectory(f.root,2),/overlaps persisted history/);
+ assert.equal(await readFile(join(c.dir,'result.json'),'utf8'),saved);
+ const dir=await createCycleDirectory(f.root,8);assert.equal(dir,join(f.root,'cycles','000008'));
+ await assert.rejects(createCycleDirectory(f.root,8),/overlaps persisted history/);
+});
+
+test('cycle directory width is not a research iteration cap',async t=>{
+ const f=await fixture(t);assert.equal(await createCycleDirectory(f.root,1000000),join(f.root,'cycles','1000000'));
+ await assert.rejects(createCycleDirectory(f.root,999999),/overlaps persisted history/);
 });

@@ -1,6 +1,6 @@
 // Admission context is rebuilt from immutable Git and independently inspected Factory records.
 // Worker prose and legacy state.continuation are never acceptance evidence or cached instructions.
-import {readFile,readdir} from 'node:fs/promises';
+import {readFile,readdir,mkdir} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
@@ -8,6 +8,14 @@ import {recoveryAction,replacementAllowed} from './free-model-policy.mjs';
 const digest=value=>createHash('sha256').update(value).digest('hex');
 const oid=/^[a-f0-9]{40}$/;
 const git=(repo,...args)=>execFileSync('/usr/bin/git',['-c','core.hooksPath=/dev/null','-C',repo,...args],{encoding:'utf8',timeout:30000,maxBuffer:5e6}).trim();
+export async function createCycleDirectory(root,sequence){
+ if(!Number.isSafeInteger(sequence)||sequence<1)throw Error('Invalid cycle sequence');
+ const parent=resolve(root,'cycles');await mkdir(parent,{recursive:true,mode:0o700});
+ if((await readdir(parent)).some(d=>/^\d{6,}$/.test(d)&&Number(d)>=sequence))throw Error('Cycle sequence overlaps persisted history; reconcile state before admission');
+ const dir=resolve(parent,String(sequence).padStart(6,'0'));
+ await mkdir(dir,{mode:0o700}); // Exclusive: never overwrite prior evidence after a stale-state restart.
+ return dir;
+}
 export function inspectCycle(controller,config,job){
  return JSON.parse(execFileSync(controller,['inspect','--config',config,'--job',job],{encoding:'utf8',timeout:40000,maxBuffer:5e6}));
 }
@@ -25,7 +33,7 @@ export async function buildResearchContext({root,repo,state,goal,cfg,beforeSeque
  let directories=[];try{directories=await readdir(resolve(root,'cycles'))}catch(e){if(e.code!=='ENOENT')throw e}
  // Discover completed attempts afresh: last_cycle and continuation can lag a crash or handoff.
  const completed=[];
- for(const directory of directories.filter(d=>/^\d{6}$/.test(d)&&Number(d)<beforeSequence).sort().reverse()){
+ for(const directory of directories.filter(d=>/^\d{6,}$/.test(d)&&Number(d)<beforeSequence).sort((a,b)=>Number(b)-Number(a))){
   const dir=resolve(root,'cycles',directory);let bytes;
   try{bytes=await readFile(resolve(dir,'result.json'))}catch(e){if(e.code==='ENOENT')continue;throw e}
   const record=JSON.parse(bytes);

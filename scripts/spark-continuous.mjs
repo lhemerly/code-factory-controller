@@ -6,7 +6,7 @@ import {resolve,dirname} from 'node:path';
 import {createHash,randomBytes} from 'node:crypto';
 import {createServer} from 'node:net';
 import {OpenCode} from './opencode-v2-client.mjs';
-import {buildResearchContext} from './research-context.mjs';
+import {buildResearchContext,createCycleDirectory} from './research-context.mjs';
 import {OwnershipLease,observeResearch,awaitNativeShells} from './continuous-ownership.mjs';
 import {sandbox} from './spark-sandbox.mjs';
 import {freeModels,classify,route,failure,recoveryAction,replacementAllowed,approvedScope} from './free-model-policy.mjs';
@@ -47,7 +47,7 @@ const port=()=>new Promise(ok=>{const s=createServer();s.listen(0,'127.0.0.1',()
 function safe(v){if(Array.isArray(v))return v.filter(x=>!['thinking','reasoning'].includes(x?.type)).map(safe);if(v&&typeof v==='object')return Object.fromEntries(Object.entries(v).filter(([k,x])=>!(['thinking','reasoning'].includes(k)&&typeof x!=='number')).map(([k,x])=>[k,safe(x)]));return v}
 
 async function runCycle(sequence){
- const dir=resolve(root,'cycles',String(sequence).padStart(6,'0'));await mkdir(dir,{recursive:true,mode:0o700});const profile=resolve(dir,'native');await mkdir(profile,{mode:0o700});
+ const dir=await createCycleDirectory(root,sequence);const profile=resolve(dir,'native');await mkdir(profile,{mode:0o700});
  for(const d of ['home','config','data','cache','state'])await mkdir(resolve(profile,d),{mode:0o700});
  const nativeEnv={...env,HOME:resolve(profile,'home'),XDG_CONFIG_HOME:resolve(profile,'config'),XDG_DATA_HOME:resolve(profile,'data'),XDG_CACHE_HOME:resolve(profile,'cache'),XDG_STATE_HOME:resolve(profile,'state')};
  const operator=randomBytes(32).toString('hex'),worker=randomBytes(32).toString('hex');let password='',native,controller,client,child,parent,work,job,lease,phase='catalog';
