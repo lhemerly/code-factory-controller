@@ -1,0 +1,16 @@
+{
+ "version": 1,
+ "sequence": 1,
+ "accepted": [],
+ "base": "dddd0000dddd0000dddd0000dddd0000dddd0000",
+ "status": "waiting",
+ "goal_status": "unresolved",
+ "current": null,
+ "updated_utc": "2026-01-01T11:00:00+00:00",
+ "last_cycle": {
+  "sequence": 1,
+  "status": "failed",
+  "result": "delta/cycles/000001/result.json"
+ },
+ "pause_reason": "no model reached"
+}

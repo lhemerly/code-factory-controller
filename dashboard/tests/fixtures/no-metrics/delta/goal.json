@@ -1,0 +1,10 @@
+{
+ "id": "delta-no-metrics",
+ "objective": "Run a delta attempt where the model was never reached, so all usage stays unknown.",
+ "completion_criteria": [
+  "Missing usage is reported as unknown, never zero."
+ ],
+ "pause_conditions": [
+  "Pause with the exact blocker."
+ ]
+}

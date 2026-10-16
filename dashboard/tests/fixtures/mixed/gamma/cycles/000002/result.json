@@ -1,0 +1,22 @@
+{
+ "sequence": 2,
+ "status": "failed",
+ "failure_kind": "incomplete accounting",
+ "goal_id": "gamma-incomplete",
+ "job_id": "gamma-000002",
+ "started_utc": "2026-01-01T10:40:00+00:00",
+ "ended_utc": "2026-01-01T10:55:00+00:00",
+ "task": "Retry the gamma baseline with the local fixture input.",
+ "usage": {
+  "cost": 0,
+  "tokens": {
+   "input": 100,
+   "output": 50,
+   "reasoning": 0,
+   "cache": {
+    "read": 0,
+    "write": 0
+   }
+  }
+ }
+}

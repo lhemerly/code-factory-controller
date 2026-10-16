@@ -1,0 +1,18 @@
+{
+ "version": 1,
+ "worker_slots": 1,
+ "goals": [
+  {
+   "id": "delta-no-metrics",
+   "root": "/captured/delta",
+   "between_cycles_seconds": 60,
+   "acceptance": {
+    "required_evidence": [
+     "real_delta_evidence"
+    ],
+    "completion_checks": []
+   },
+   "completion_contract_state": "Accepted patches remain milestones, never standing-goal success."
+  }
+ ]
+}

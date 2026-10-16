@@ -1,0 +1,23 @@
+{
+ "version": 1,
+ "sequence": 1,
+ "accepted": [
+  {
+   "job": "beta-000001",
+   "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "receipt": "integrated-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  }
+ ],
+ "base": "bbbb0000bbbb0000bbbb0000bbbb0000bbbb0000",
+ "status": "waiting",
+ "goal_status": "unresolved",
+ "current": null,
+ "updated_utc": "2025-12-31T18:00:00+00:00",
+ "last_cycle": {
+  "sequence": 1,
+  "status": "accepted",
+  "result": "beta/cycles/000001/result.json"
+ },
+ "continuation": "Next direction recorded after the beta milestone: rerun the baseline comparison on the second region before any acceptance claim.",
+ "pause_reason": null
+}

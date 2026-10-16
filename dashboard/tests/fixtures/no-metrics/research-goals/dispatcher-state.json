@@ -1,0 +1,19 @@
+{
+ "version": 1,
+ "status": "running",
+ "updated_utc": "2026-01-01T11:00:00+00:00",
+ "current": null,
+ "goals": {
+  "delta-no-metrics": {
+   "state": "ready",
+   "milestones": [],
+   "native_status": "failed",
+   "goal_acceptance": {
+    "passed": false,
+    "status": "awaiting_acceptance",
+    "reason": "completion evidence missing"
+   },
+   "reason": "Cycle never reached a model; usage unknown"
+  }
+ }
+}

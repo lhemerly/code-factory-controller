@@ -1,0 +1,12 @@
+{
+ "id": "gamma-incomplete",
+ "objective": "Establish the gamma baseline on real inputs; the goal is deliberately incomplete.",
+ "completion_criteria": [
+  "Baseline executed on real inputs.",
+  "Missing metrics must be reported as unknown, never as zero.",
+  "Whole-goal completion requires separate independent acceptance."
+ ],
+ "pause_conditions": [
+  "Pause with the exact missing input."
+ ]
+}

@@ -1,0 +1,100 @@
+{
+ "version": 1,
+ "cursor": 3,
+ "status": "running",
+ "updated_utc": "2026-01-01T11:58:00+00:00",
+ "current": {
+  "goal": "alpha-active",
+  "index": 0,
+  "expected_sequence": 2,
+  "phase": "running",
+  "process": {
+   "pid": 4242,
+   "boot_id": "fixture-boot",
+   "uid": 1000
+  }
+ },
+ "goals": {
+  "alpha-active": {
+   "state": "ready",
+   "milestones": [],
+   "usage": {
+    "model": {
+     "id": "fixture-model",
+     "providerID": "fixture-provider",
+     "variant": "default"
+    },
+    "cost": 0,
+    "tokens": {
+     "input": 0,
+     "output": 0,
+     "reasoning": 0,
+     "cache": {
+      "read": 0,
+      "write": 0
+     }
+    },
+    "accounting_status": "settled_zero"
+   },
+   "model": "fixture-provider/fixture-model",
+   "native_status": "succeeded",
+   "goal_acceptance": {
+    "passed": false,
+    "status": "awaiting_acceptance",
+    "reason": "mandatory completion checks/evidence are missing"
+   },
+   "next_at": 1767268740.0,
+   "reason": "Goal has unresolved active state; cannot reassign"
+  },
+  "beta-stale": {
+   "state": "ready",
+   "milestones": [
+    {
+     "job": "beta-000001",
+     "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+     "receipt": "integrated-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+     "result": "beta/cycles/000001/result.json"
+    }
+   ],
+   "usage": {
+    "model": {
+     "id": "fixture-model",
+     "providerID": "fixture-provider",
+     "variant": "default"
+    },
+    "cost": 0,
+    "tokens": {
+     "input": 200,
+     "output": 100,
+     "reasoning": 0,
+     "cache": {
+      "read": 300,
+      "write": 0
+     }
+    },
+    "accounting_status": "settled_zero"
+   },
+   "model": "fixture-provider/fixture-model",
+   "native_status": "succeeded",
+   "goal_acceptance": {
+    "passed": false,
+    "status": "awaiting_acceptance",
+    "reason": "mandatory completion checks/evidence are missing"
+   },
+   "next_at": 1767270000.0,
+   "reason": "Milestone recorded; awaiting independent acceptance"
+  },
+  "gamma-incomplete": {
+   "state": "ready",
+   "milestones": [],
+   "model": "fixture-provider/fixture-model",
+   "native_status": "failed",
+   "goal_acceptance": {
+    "passed": false,
+    "status": "awaiting_acceptance",
+    "reason": "mandatory completion checks/evidence are missing"
+   },
+   "reason": "Cycle produced incomplete metrics; accounting remains unknown"
+  }
+ }
+}

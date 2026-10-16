@@ -1,0 +1,28 @@
+{
+ "sequence": 1,
+ "status": "accepted",
+ "goal_id": "alpha-active",
+ "job_id": "alpha-000001",
+ "started_utc": "2026-01-01T11:30:00+00:00",
+ "ended_utc": "2026-01-01T11:50:00+00:00",
+ "model": "fixture-provider/fixture-model",
+ "task": "Run the alpha held-out control and record exact metrics.\nSecondary detail line.",
+ "usage": {
+  "model": {
+   "id": "fixture-model",
+   "providerID": "fixture-provider",
+   "variant": "default"
+  },
+  "cost": 0,
+  "tokens": {
+   "input": 1000,
+   "output": 400,
+   "reasoning": 100,
+   "cache": {
+    "read": 5000,
+    "write": 0
+   }
+  },
+  "accounting_status": "settled_zero"
+ }
+}

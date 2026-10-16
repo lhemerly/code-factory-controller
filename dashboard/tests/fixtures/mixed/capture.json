@@ -1,0 +1,88 @@
+{
+ "captured_utc": "2026-01-01T12:00:00+00:00",
+ "source": "synthetic fixture state for automated dashboard tests",
+ "mode": "static fixture, not live telemetry",
+ "omitted": [
+  "host-private.json"
+ ],
+ "records": [
+  {
+   "path": "alpha/cycles/000001/notes-extra.json",
+   "source_sha256": "6a13928bffef151b630f6b4e8ca741886b661a9df5845c3290081818324f0fbd",
+   "captured_sha256": "6a13928bffef151b630f6b4e8ca741886b661a9df5845c3290081818324f0fbd",
+   "field_selection": "all fields in allowlisted non-secret JSON"
+  },
+  {
+   "path": "alpha/cycles/000001/result.json",
+   "source_sha256": "f44b05cd0b96a0f86c78f06b999848eba07a222db367bd0704f03fb3de461ed9",
+   "captured_sha256": "f44b05cd0b96a0f86c78f06b999848eba07a222db367bd0704f03fb3de461ed9",
+   "field_selection": "all fields in allowlisted non-secret JSON"
+  },
+  {
+   "path": "alpha/goal.json",
+   "source_sha256": "5e3c36be4817a01f5ee4a72abf2da2f2b5d86b00caab7d89f1dbe233bc9ba57e",
+   "captured_sha256": "5e3c36be4817a01f5ee4a72abf2da2f2b5d86b00caab7d89f1dbe233bc9ba57e",
+   "field_selection": "all fields in allowlisted non-secret JSON"
+  },
+  {
+   "path": "alpha/status.json",
+   "source_sha256": "f552a1a0d6c10f8173bb47e11eeef4843b72ebf1b18d29e91d8bc6396daaba2d",
+   "captured_sha256": "f552a1a0d6c10f8173bb47e11eeef4843b72ebf1b18d29e91d8bc6396daaba2d",
+   "field_selection": "all fields in allowlisted non-secret JSON"
+  },
+  {
+   "path": "beta/cycles/000001/result.json",
+   "source_sha256": "2ef8c734145ecdb95cc98ca01de2a9eb279879d7add80fd6a804988d2f9fc5f0",
+   "captured_sha256": "2ef8c734145ecdb95cc98ca01de2a9eb279879d7add80fd6a804988d2f9fc5f0",
+   "field_selection": "all fields in allowlisted non-secret JSON"
+  },
+  {
+   "path": "beta/goal.json",
+   "source_sha256": "fe60d059333d4ad951d7a08ae277680572e358267ea0ea9b79b9bca8290e6417",
+   "captured_sha256": "fe60d059333d4ad951d7a08ae277680572e358267ea0ea9b79b9bca8290e6417",
+   "field_selection": "all fields in allowlisted non-secret JSON"
+  },
+  {
+   "path": "beta/status.json",
+   "source_sha256": "64dc56289812bdbd4d2eec660fd03cb1b17c0534123f43b6f5a561b8290bd423",
+   "captured_sha256": "64dc56289812bdbd4d2eec660fd03cb1b17c0534123f43b6f5a561b8290bd423",
+   "field_selection": "all fields in allowlisted non-secret JSON"
+  },
+  {
+   "path": "gamma/cycles/000001/result.json",
+   "source_sha256": "308f6b2abea72ac733d3a43157e839fbba0eded08711609ed87b50be49d346e4",
+   "captured_sha256": "308f6b2abea72ac733d3a43157e839fbba0eded08711609ed87b50be49d346e4",
+   "field_selection": "all fields in allowlisted non-secret JSON"
+  },
+  {
+   "path": "gamma/cycles/000002/result.json",
+   "source_sha256": "712fcf7549dabf9696132bfc9aabc9944195ec9f4a5b9a9e8b61f18095dba3c5",
+   "captured_sha256": "712fcf7549dabf9696132bfc9aabc9944195ec9f4a5b9a9e8b61f18095dba3c5",
+   "field_selection": "all fields in allowlisted non-secret JSON"
+  },
+  {
+   "path": "gamma/goal.json",
+   "source_sha256": "42c5d3e6867a36e66c155ef5bbcb4ea4af223b7275a43b4e503489e9909ebe3e",
+   "captured_sha256": "42c5d3e6867a36e66c155ef5bbcb4ea4af223b7275a43b4e503489e9909ebe3e",
+   "field_selection": "all fields in allowlisted non-secret JSON"
+  },
+  {
+   "path": "gamma/status.json",
+   "source_sha256": "a734dbb491a804e6d23f230db09cef041d8e710e399acaaccf4e6d2ce8cf317a",
+   "captured_sha256": "a734dbb491a804e6d23f230db09cef041d8e710e399acaaccf4e6d2ce8cf317a",
+   "field_selection": "all fields in allowlisted non-secret JSON"
+  },
+  {
+   "path": "research-goals/dispatcher-state.json",
+   "source_sha256": "864f51fc321432194d7dfe4a07d87298aef9d113b4547399cbaf32fe130bfa28",
+   "captured_sha256": "864f51fc321432194d7dfe4a07d87298aef9d113b4547399cbaf32fe130bfa28",
+   "field_selection": "all fields in allowlisted non-secret JSON"
+  },
+  {
+   "path": "research-goals/launch.json",
+   "source_sha256": "f2a525ba2b22928a47319dce74ce56e43ec1a301bf05c1a0482ef7c66c540b8f",
+   "captured_sha256": "f2a525ba2b22928a47319dce74ce56e43ec1a301bf05c1a0482ef7c66c540b8f",
+   "field_selection": "all fields in allowlisted non-secret JSON"
+  }
+ ]
+}
