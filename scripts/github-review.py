@@ -137,6 +137,7 @@ class Adapter:
   if record.get('status')!='accepted' or record.get('cleanup_confirmed') is not True:raise ValueError('Publication requires accepted, cleaned delivery')
   cfg=read(root/'supervisor.json');dispatcher=object.__new__(D.Dispatcher);dispatcher.m={'controller':cfg['controller']}
   D.Dispatcher.audit_cycle(dispatcher,{'id':record['goal_id']},record)
+  authoritative=D.inspect_job(cfg['controller'],pathlib.Path(record['_result_path']).parent/'controller.json',record['job_id'])
   commit=record['acceptance']['integrated_commit'];repo=root/'repository'
   if record['base']!=batch['head'] or record['goal_id']!=read(root/'goal.json')['id']:raise ValueError('Receipt does not bind this review goal/head')
   git(repo,'merge-base','--is-ancestor',batch['head'],commit)
@@ -152,7 +153,7 @@ class Adapter:
   product(b['publication']['title'],b)
   body='\n'.join(summary['summary'])+'\n\nLimitations:\n'+'\n'.join('- '+x for x in summary['limitations'])
   product(body,b)
-  checks=record['acceptance']['active_verification_receipt']['environment']['checks']
+  checks=authoritative['active_verification_receipt']['environment']['checks']
   body+='\n\nVerified checks: '+', '.join(str(c.get('check_id'))+' ('+str(c.get('observations',{}).get('executed','count unavailable'))+' executed)' for c in checks)+'.'
   return repo,commit,body
  def reconcile(self,manifest_path,queue_path):

@@ -31,6 +31,9 @@ class ControllerBoundary(unittest.TestCase):
  def tearDown(self):self.temp.cleanup()
  def test_actual_receipt_publishes_and_restart_deduplicates(self):
   result=self.adapter.publish(self.key);self.assertEqual(result['state'],'confirmed');self.adapter.publish(self.key);self.assertEqual(len(self.remote.pushes),1)
+ def test_pr_counts_come_from_authoritative_receipt(self):
+  out=M.read(self.result);out['acceptance']['active_verification_receipt']['environment']['checks'][0]['observations']={'executed':99999};M.save(self.result,out)
+  self.adapter.publish(self.key);self.assertNotIn('99999',self.remote.bodies[-1])
  def test_forged_saved_receipt_refused(self):
   out=M.read(self.result);out['acceptance']['active_verification_receipt']['verification_id']='forged';M.save(self.result,out)
   with self.assertRaises(RuntimeError):self.adapter.publish(self.key)
