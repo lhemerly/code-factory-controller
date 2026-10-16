@@ -1,0 +1,28 @@
+{
+ "sequence": 1,
+ "status": "accepted",
+ "goal_id": "beta-stale",
+ "job_id": "beta-000001",
+ "started_utc": "2025-12-31T17:00:00+00:00",
+ "ended_utc": "2025-12-31T17:30:00+00:00",
+ "model": "fixture-provider/fixture-model",
+ "task": "Rerun the beta baseline comparison on the first region.",
+ "usage": {
+  "model": {
+   "id": "fixture-model",
+   "providerID": "fixture-provider",
+   "variant": "default"
+  },
+  "cost": 0,
+  "tokens": {
+   "input": 200,
+   "output": 100,
+   "reasoning": 0,
+   "cache": {
+    "read": 300,
+    "write": 0
+   }
+  },
+  "accounting_status": "settled_zero"
+ }
+}

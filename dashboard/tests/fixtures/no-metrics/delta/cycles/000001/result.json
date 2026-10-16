@@ -1,0 +1,8 @@
+{
+ "sequence": 1,
+ "status": "failed",
+ "failure_kind": "model never reached",
+ "goal_id": "delta-no-metrics",
+ "job_id": "delta-000001",
+ "task": "Attempt that never reached a model."
+}

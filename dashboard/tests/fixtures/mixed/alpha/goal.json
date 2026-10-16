@@ -1,0 +1,11 @@
+{
+ "id": "alpha-active",
+ "objective": "Demonstrate a controlled alpha measurement on held-out data without widening the claim.",
+ "completion_criteria": [
+  "Held-out control passes with recorded metrics.",
+  "Whole-goal completion requires separate independent acceptance."
+ ],
+ "pause_conditions": [
+  "Pause on missing inputs."
+ ]
+}

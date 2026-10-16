@@ -22,6 +22,8 @@ jobs:
       - run: python3 scripts/test-goal-runner.py
       - run: python3 scripts/test-goal-acceptance.py
       - run: python3 scripts/test-cli-updater.py
+      - name: Test dashboard synthetic state and read-only HTTP (no private capture)
+        run: python3 -m unittest dashboard.tests.test_current_state dashboard.tests.test_fixtures dashboard.tests.test_loader_safety dashboard.tests.test_server dashboard.tests.test_state_root
       - run: python3 scripts/test-research-dispatch.py
       - run: python3 scripts/test-dispatch-queue.py
       - run: node scripts/test-continuous-ownership.mjs

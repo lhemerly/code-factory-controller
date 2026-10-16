@@ -1,0 +1,17 @@
+{
+ "version": 1,
+ "sequence": 2,
+ "accepted": [],
+ "base": "cccc0000cccc0000cccc0000cccc0000cccc0000",
+ "status": "waiting",
+ "goal_status": "unresolved",
+ "current": null,
+ "updated_utc": "2026-01-01T11:00:00+00:00",
+ "last_cycle": {
+  "sequence": 2,
+  "status": "failed",
+  "result": "gamma/cycles/000002/result.json"
+ },
+ "continuation": "Retry the gamma baseline with the local fixture input and keep the missing accounting visible as unknown.",
+ "pause_reason": "incomplete metrics"
+}

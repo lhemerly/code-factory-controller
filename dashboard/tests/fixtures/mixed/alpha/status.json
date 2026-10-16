@@ -1,0 +1,20 @@
+{
+ "version": 1,
+ "sequence": 2,
+ "accepted": [],
+ "base": "aaaa0000aaaa0000aaaa0000aaaa0000aaaa0000",
+ "status": "running",
+ "goal_status": "unresolved",
+ "current": {
+  "sequence": 2,
+  "phase": "running"
+ },
+ "updated_utc": "2026-01-01T11:58:00+00:00",
+ "last_cycle": {
+  "sequence": 1,
+  "status": "accepted",
+  "result": "alpha/cycles/000001/result.json"
+ },
+ "continuation": "Continue the alpha experiment with the held-out control before any integration. The next step is chosen from cycle-1 evidence and must not widen the claim.",
+ "pause_reason": null
+}

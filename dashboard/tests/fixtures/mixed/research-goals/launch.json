@@ -1,0 +1,42 @@
+{
+ "version": 1,
+ "worker_slots": 2,
+ "goals": [
+  {
+   "id": "alpha-active",
+   "root": "/captured/alpha",
+   "between_cycles_seconds": 60,
+   "acceptance": {
+    "required_evidence": [
+     "real_alpha_control"
+    ],
+    "completion_checks": []
+   },
+   "completion_contract_state": "Independent final-check protocol not supplied; accepted patches remain milestones, never standing-goal success."
+  },
+  {
+   "id": "beta-stale",
+   "root": "/captured/beta",
+   "between_cycles_seconds": 60,
+   "acceptance": {
+    "required_evidence": [
+     "real_beta_control"
+    ],
+    "completion_checks": []
+   },
+   "completion_contract_state": "Independent final-check protocol not supplied; accepted patches remain milestones, never standing-goal success."
+  },
+  {
+   "id": "gamma-incomplete",
+   "root": "/captured/gamma",
+   "between_cycles_seconds": 60,
+   "acceptance": {
+    "required_evidence": [
+     "real_gamma_control"
+    ],
+    "completion_checks": []
+   },
+   "completion_contract_state": "Independent final-check protocol not supplied; accepted patches remain milestones, never standing-goal success."
+  }
+ ]
+}

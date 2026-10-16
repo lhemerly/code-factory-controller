@@ -1,0 +1,9 @@
+{
+ "sequence": 1,
+ "status": "failed",
+ "failure_kind": "missing input",
+ "goal_id": "gamma-incomplete",
+ "job_id": "gamma-000001",
+ "ended_utc": "2026-01-01T10:30:00+00:00",
+ "task": "Investigate the missing baseline input."
+}

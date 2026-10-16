@@ -1,0 +1,11 @@
+{
+ "id": "beta-stale",
+ "objective": "Advance the beta goal with defensible evidence while preserving negative results.",
+ "completion_criteria": [
+  "Independent validation of the beta claim.",
+  "Separate scientific acceptance is required for whole-goal completion."
+ ],
+ "pause_conditions": [
+  "Pause on resource failure."
+ ]
+}
