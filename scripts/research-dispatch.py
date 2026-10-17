@@ -292,9 +292,11 @@ class Dispatcher:
    recovery.get('execution_stop',{}).get('status')=='confirmed' and
    recovery.get('accounting',{}).get('status')!='violating')
   if already_stopped:
-   self.s['circuits']=merge_circuits(self.s.get('circuits',{}),status.get('circuits',{}))
-   if self.m.get('circuits_file'):save(pathlib.Path(self.m['circuits_file']),self.s['circuits'])
-   return True
+   # A positively stopped cycle already has independent controller stop evidence.
+   # Never run the owned helper again for it. Return to the caller so the normal
+   # finish() path still performs the independent controller audit, paused-state
+   # processing and outcome/usage accounting before any failover.
+   return False
   if not self.native_recovery_qualified(goal,status,out):
    if out.get('status')=='failed' and out.get('phase') in ('native','native_shells'):
     raise RuntimeError('Native transport recovery fence: unqualified stopped result')

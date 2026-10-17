@@ -155,6 +155,51 @@ class Fixture(unittest.TestCase):
   g=self.goals[0];out={'goal_id':'scroll','status':'failed','cleanup_confirmed':True,'job_id':'stopped','_result_path':str(self.root/'result.json'),'recovery':{'stop_id':'claimed-stop','execution_stop':{'status':'confirmed'},'accounting':{'status':'unknown'}}}
   controller=self.root/'inspector';controller.write_text('#!/usr/bin/python3\nimport json\nprint(json.dumps({"execution_recovery":{"stop_id":"different-stop","execution_stop":{"status":"confirmed"},"accounting":{"status":"settled_zero"}}}))\n');controller.chmod(0o700);self.m['controller']=str(controller);d=self.manager()
   with self.assertRaisesRegex(RuntimeError,'exact failed-attempt stop'):d.audit_cycle(g,out)
+ def test_confirmed_denial_finishes_audit_and_stays_paused(self):
+  audits=[]
+  def runner(g,record):
+   self.fake(g,record,status='failed');root=pathlib.Path(g['root']);s=json.loads((root/'status.json').read_text())
+   p=pathlib.Path(s['last_cycle']['result']);x=json.loads(p.read_text());x.update(phase='native',failure_kind='blocked',error='Permission denied: external_directory',fence_error=None)
+   D.save(p,x);s.update(status='paused',pause_reason=x['error']);D.save(root/'status.json',s)
+  d=self.manager(runner=runner,audit=lambda g,o:audits.append(o) or None);d.step()
+  self.assertEqual(len(audits),1,'The independent controller audit must run before any failover')
+  self.assertEqual(d.s['goals']['scroll']['state'],'paused','A positively stopped permission rejection must never become ready')
+  self.assertEqual(self.calls,['scroll'])
+ def recovery_fixture(self):
+  self.goals=self.goals[:1];self.m['goals']=self.goals
+  g=self.goals[0];root=pathlib.Path(g['root']);binary=self.root/'controller';binary.write_text('trusted controller fixture');helper=ROOT/'reconcile-stopped-v2.mjs'
+  self.m['controller']=str(binary)
+  self.m['trusted_files']={str(helper):hashlib.sha256(helper.read_bytes()).hexdigest(),str(binary):hashlib.sha256(binary.read_bytes()).hexdigest()}
+  return g,root,helper
+ def test_already_stopped_cycle_finishes_audit_without_rerunning_helper(self):
+  g,root,helper=self.recovery_fixture();audits=[]
+  def runner(g,record):
+   self.fake(g,record,status='failed');s=json.loads((root/'status.json').read_text());p=pathlib.Path(s['last_cycle']['result']);x=json.loads(p.read_text())
+   x.update(phase='native',failure_kind='transient',error='fetch failed',fence_error=None,recovery={'stop_id':'stop-'+str(x['sequence']),'execution_stop':{'status':'confirmed'},'accounting':{'status':'unknown'}});D.save(p,x)
+  original=D.acceptance.supervised_check;D.acceptance.supervised_check=lambda *a,**k:self.fail('A positively stopped cycle must not run the owned helper again')
+  try:d=self.manager(runner=runner,audit=lambda g,o:audits.append(o) or None);d.step()
+  finally:D.acceptance.supervised_check=original
+  self.assertEqual(len(audits),1,'A stopped cycle still requires the normal independent audit')
+  self.assertEqual(d.s['goals']['scroll']['state'],'ready');self.assertEqual(self.calls,['scroll'])
+ def test_each_owned_helper_receipt_keeps_a_unique_log_and_is_never_overwritten(self):
+  g,root,helper=self.recovery_fixture();seen=[]
+  def runner(g,record):
+   self.calls.append(g['id']);n=record['expected_sequence'];directory=root/'cycles'/('%06d'%n);directory.mkdir(parents=True)
+   out={'sequence':n,'goal_id':g['id'],'status':'failed','phase':'native','base':'a'*40,'model':'opencode/big-pickle','job_id':'job-'+str(n),'attempt':'attempt-'+str(n),'child':'native-'+str(n),'worktree':str(directory/'worktree'),'cleanup_confirmed':True,'failure_kind':'transient','error':'fetch failed','fence_error':'stop unavailable'}
+   D.save(directory/'result.json',out)
+   D.save(root/'status.json',{'sequence':n,'base':'a'*40,'circuits':{},'status':'paused','current':{'sequence':n,'directory':str(directory),'job':out['job_id'],'child':out['child'],'worktree':out['worktree'],'phase':'native'},'last_cycle':{'sequence':n,'status':'failed','result':str(directory/'result.json')}})
+  def helper_effect(executable,argv,checkout,env,timeout,stdout,stderr,receipt):
+   seen.append(pathlib.Path(stdout));self.assertIn(str(helper),argv);self.assertEqual(env.get('FACTORY_VERIFICATION_COMMIT'),'a'*40)
+   pathlib.Path(stdout).write_text('{"reconciled":true}')
+   s=json.loads((root/'status.json').read_text());p=pathlib.Path(s['last_cycle']['result']);x=json.loads(p.read_text())
+   x.update(fence_error=None,execution_stop='confirmed',recovery={'stop_id':'stop-'+str(x['sequence']),'execution_stop':{'status':'confirmed'},'accounting':{'status':'settled_zero'}})
+   target=p.parent/'reconciled-result.json';D.save(target,x);s.update(current=None,status='waiting',last_cycle={'sequence':x['sequence'],'status':'failed','result':str(target)});D.save(root/'status.json',s);return None
+  original=D.acceptance.supervised_check;D.acceptance.supervised_check=helper_effect
+  try:
+   d=self.manager(runner=runner,audit=lambda g,o:None);d.step();self.assertEqual(len(seen),1);self.assertEqual(d.s['goals']['scroll']['state'],'ready')
+   d.step();self.assertEqual(len(seen),2);self.assertNotEqual(seen[0],seen[1],'Never overwrite a previous recovery log')
+   self.assertEqual(seen[0].read_text(),'{"reconciled":true}','Prior owned-helper logs must be preserved')
+  finally:D.acceptance.supervised_check=original
  def test_goal_failure_is_saved_before_next_cycle_and_survives_dispatcher_restart(self):
   result={'passed':False,'status':'acceptance_failed','commit':'a'*40,'reason':'Missing approved behavior','receipts':[]}
   d=self.manager(complete=lambda g,m:result);d.step()
