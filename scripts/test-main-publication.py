@@ -169,4 +169,45 @@ class PreflightTests(unittest.TestCase):
   self.assertEqual(len(self.remote.pushes),1)
   self.assertEqual(M.read(self.p.root/'state.json')['history'],[])
 
+class AdapterTests(unittest.TestCase):
+ def _api(self,rows,suites,statuses=None):
+  target=self.commit;repo=self.b['repository']
+  def api(path):
+   if path=='repos/'+repo:return {'id':self.b['repository_id'],'full_name':repo,'private':True,'default_branch':'main'}
+   if path=='repos/'+repo+'/git/ref/heads/main':return {'object':{'sha':target}}
+   if path==f'repos/{repo}/commits/{target}/check-runs?per_page=100&filter=all':return {'total_count':len(rows),'check_runs':rows}
+   if path==f'repos/{repo}/commits/{target}/check-suites?per_page=100':return {'total_count':len(suites),'check_suites':suites}
+   if path==f'repos/{repo}/commits/{target}/status?per_page=100':return {'total_count':len(statuses or []),'statuses':statuses or []}
+   raise AssertionError('Unexpected API path '+path)
+  return api
+ tearDown=Tests.tearDown
+ git=Tests.git
+ def setUp(self):
+  Tests.setUp(self);self.b['required_checks']=['controller']
+  # reuse commit as target for adapter
+ def test_latest_green_over_older_failed_with_branch_and_sha_guards(self):
+  target=self.commit;branch='main'
+  suites=[{'id':10,'head_branch':'factory/x-'+target,'head_sha':target},{'id':20,'head_branch':branch,'head_sha':target}]
+  def row(i,suite,verdict,sha=target,completed=None,started=None):
+   r={'id':i,'name':'controller','status':'completed','conclusion':verdict,'head_sha':sha,'check_suite':{'id':suite}}
+   if completed is not None:r['completed_at']=completed
+   if started is not None:r['started_at']=started
+   return r
+  rows=[row(100,10,'success',completed='2026-01-01T00:00:00Z'),row(200,20,'failure',completed='2026-01-01T00:01:00Z'),row(300,20,'success',completed='2026-01-01T00:02:00Z'),row(400,20,'failure',sha='f'*40,completed='2026-01-01T00:03:00Z'),row(500,999,'failure',completed='2026-01-01T00:04:00Z')]
+  remote=M.GitHub();remote.api=self._api(rows,suites);s=remote.snapshot(self.b,target);checks=s['main_checks']
+  self.assertEqual(len(checks),1);self.assertEqual(checks[0]['conclusion'],'success')
+  suites[1]['head_sha']='e'*40
+  self.assertEqual(remote.snapshot(self.b,target)['main_checks'],[])
+ def test_pending_newer_run_wins_over_older_completed(self):
+  target=self.commit;branch='main'
+  suites=[{'id':20,'head_branch':branch,'head_sha':target}]
+  rows=[{'id':1,'name':'controller','status':'completed','conclusion':'success','head_sha':target,'check_suite':{'id':20},'completed_at':'2026-01-01T00:01:00Z'},
+        {'id':2,'name':'controller','status':'in_progress','conclusion':None,'head_sha':target,'check_suite':{'id':20},'started_at':'2026-01-01T00:02:00Z'}]
+  remote=M.GitHub();remote.api=self._api(rows,suites);s=remote.snapshot(self.b,target)
+  self.assertEqual(s['main_checks'][0]['status'],'in_progress')
+ def test_status_context_alone_cannot_certify_main_checks(self):
+  target=self.commit
+  remote=M.GitHub();remote.api=self._api([],[],[{'context':'ci','state':'success'}]);s=remote.snapshot(self.b,target)
+  self.assertEqual(s['main_checks'],[])
+
 if __name__=='__main__':unittest.main()

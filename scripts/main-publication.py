@@ -67,7 +67,7 @@ class GitHub:
    if suite.get('head_sha')!=target:continue
    if run.get('head_sha')!=target:continue
    name=run.get('name')
-   key=(run.get('completed_at') or '',run.get('started_at') or '',run.get('id') or 0)
+   key=(run.get('completed_at') or run.get('started_at') or '',run.get('id') or 0)
    if name not in latest or key>latest[name][0]:
     latest[name]=(key,run)
   main_checks=[{'name':run['name'],'status':run['status'],'conclusion':run.get('conclusion')} for _,run in latest.values()]
