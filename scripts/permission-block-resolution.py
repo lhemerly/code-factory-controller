@@ -12,18 +12,50 @@ def require(ok,why):
 def regular(p):
  p=pathlib.Path(p);s=p.lstat();require(stat.S_ISREG(s.st_mode) and s.st_uid==os.getuid() and not s.st_mode&0o022,'Untrusted owner file: '+str(p));return p
 
-def owner_lock(path):
- # Linux flock ownership must belong to this audited owner's process ancestry,
- # not merely to some unrelated process holding a busy lock.
- path=pathlib.Path(path);s=path.stat();key=f'{os.major(s.st_dev):02x}:{os.minor(s.st_dev):02x}:{s.st_ino}';ancestors={os.getpid()};pid=os.getpid()
+# Corroborate target identity through an ancestor open FD, its kernel FLOCK
+# record, and /proc/locks. Stat and lock devices may differ across mounts.
+def _ancestry():
+ result={};pid=os.getpid()
  for _ in range(64):
-  try:parent=int(pathlib.Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[1])
+  try:
+   fields=pathlib.Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split();result[pid]=fields[19];parent=int(fields[1])
   except (FileNotFoundError,ValueError):break
-  if parent<=1 or parent in ancestors:break
-  ancestors.add(parent);pid=parent
- for line in pathlib.Path('/proc/locks').read_text().splitlines():
-  parts=line.split()
-  if len(parts)>5 and parts[1]=='FLOCK' and parts[3]=='WRITE' and parts[5]==key and int(parts[4]) in ancestors:return
+  if parent<=1 or parent in result:break
+  pid=parent
+ return result
+
+def _kernel_locks(text,fdinfo=False):
+ result=[]
+ for line in text.splitlines():
+  fields=line.split()
+  if fdinfo:
+   if not fields or fields[0]!='lock:':continue
+   fields=fields[1:]
+  if len(fields)==8 and fields[1:4]==['FLOCK','ADVISORY','WRITE'] and fields[6:]==['0','EOF']:
+   result.append(tuple(fields[1:]))
+ return result
+
+def owner_lock(path):
+ path=pathlib.Path(path);target=path.lstat()
+ if not stat.S_ISREG(target.st_mode):raise ValueError('Lock target is not a regular file')
+ before=_ancestry();global_locks=_kernel_locks(pathlib.Path('/proc/locks').read_text())
+ for pid,ticks in before.items():
+  try:fds=list(pathlib.Path(f'/proc/{pid}/fd').iterdir())
+  except (FileNotFoundError,PermissionError):continue
+  for fd in fds:
+   try:
+    observed=fd.stat()
+    if (observed.st_dev,observed.st_ino)!=(target.st_dev,target.st_ino):continue
+    text=pathlib.Path(f'/proc/{pid}/fdinfo/{fd.name}').read_text();metadata=dict(line.split(':',1) for line in text.splitlines() if ':' in line and not line.startswith('lock:'))
+    if int(metadata.get('ino','-1'))!=target.st_ino:continue
+    for lock in _kernel_locks(text,True):
+     if lock[3]!=str(pid) or lock not in global_locks:continue
+     current=pathlib.Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[19]
+     latest=path.lstat()
+     if current!=ticks or (latest.st_dev,latest.st_ino)!=(target.st_dev,target.st_ino):continue
+     if lock not in _kernel_locks(pathlib.Path('/proc/locks').read_text()):continue
+     return {'pid':pid,'fd':fd.name,'stat_device':f'{os.major(target.st_dev):02x}:{os.minor(target.st_dev):02x}','kernel_lock_key':lock[4],'inode':target.st_ino,'start_ticks':ticks}
+   except (FileNotFoundError,PermissionError,ValueError):continue
  raise ValueError('Exclusive owner lock unavailable: '+str(path))
 
 def audit(root,directory,controller,next_sequence):
@@ -45,7 +77,7 @@ def audit(root,directory,controller,next_sequence):
    if isinstance(error,dict) and error.get('type')=='permission.rejected':rejected.append(content)
  require(len(rejected)==1,'Additional or absent denial');call=rejected[0]
  require(call.get('name')=='read' and call.get('executed') is False and call['state'].get('input')=={'path':denied} and call['state']['error'].get('message')=='Permission denied: external_directory','Different denied action')
- manifest_path=regular(v['manifest']);manifest=read(manifest_path);state=read(regular(manifest['state']));require(state['manifest_digest']==digest(manifest),'Owner manifest not reconciled');owner_lock(manifest['pool_lock']);owner_lock(root/'supervisor.lock')
+ manifest_path=regular(v['manifest']);manifest=read(manifest_path);state=read(regular(manifest['state']));require(state['manifest_digest']==digest(manifest),'Owner manifest not reconciled');ownership=[owner_lock(manifest['pool_lock']),owner_lock(root/'supervisor.lock')]
  current=state.get('current')
  require(not current or current.get('goal')==out['goal_id'] and current.get('expected_sequence')==next_sequence,'Another active goal or sequence')
  require(any(g['id']==out['goal_id'] and pathlib.Path(g['root']).resolve()==root for g in manifest['goals']),'Manifest goal mismatch')
@@ -79,7 +111,7 @@ def audit(root,directory,controller,next_sequence):
   if p.name.isdigit() and int(p.name)>=next_sequence:
    require(int(p.name)==next_sequence and not any((p/n).exists() for n in ['controller.json','operator-admit.json','operator-prepare.json','native-session.json']),'Resolution already consumed or superseded')
  require(not (root/'PAUSE').exists(),'Explicit user pause remains authoritative')
- return {'kind':v['kind'],'proof_sha256':sha(proof),'authorization_sha256':sha(v['authorization']),'original_sha256':sha(original),'denial_history_sha256':sha(history),'packaging_sha256':v['packaging_sha256'],'goal_id':out['goal_id'],'authorized_next_sequence':next_sequence,'prior_outcome':'failed','prior_denial_preserved':True,'accounting':live['accounting']['status'],'usage':out.get('usage'),'access_grants':[],'acceptance_granted':False}
+ return {'kind':v['kind'],'owner_locks':ownership,'proof_sha256':sha(proof),'authorization_sha256':sha(v['authorization']),'original_sha256':sha(original),'denial_history_sha256':sha(history),'packaging_sha256':v['packaging_sha256'],'goal_id':out['goal_id'],'authorized_next_sequence':next_sequence,'prior_outcome':'failed','prior_denial_preserved':True,'accounting':live['accounting']['status'],'usage':out.get('usage'),'access_grants':[],'acceptance_granted':False}
 
 def main():
  p=argparse.ArgumentParser();p.add_argument('--root',required=True);p.add_argument('--directory',required=True);p.add_argument('--controller',required=True);p.add_argument('--next-sequence',required=True,type=int);a=p.parse_args();print(json.dumps(audit(a.root,a.directory,a.controller,a.next_sequence)))

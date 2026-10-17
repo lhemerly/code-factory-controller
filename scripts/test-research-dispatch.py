@@ -371,4 +371,7 @@ PreAdmissionRegression=_pre.PreAdmissionRegression
 _permission_spec=importlib.util.spec_from_file_location('permission_regressions',ROOT/'test-permission-block-resolution.py');_permission=importlib.util.module_from_spec(_permission_spec);_permission_spec.loader.exec_module(_permission)
 PermissionResolutionRegression=_permission.PermissionResolutionRegression
 
+_locks_spec=importlib.util.spec_from_file_location('lock_regressions',ROOT/'test-lock-corroboration.py');_locks=importlib.util.module_from_spec(_locks_spec);_locks_spec.loader.exec_module(_locks)
+LockCorroborationRegression=_locks.LockRegression
+
 if __name__=='__main__':unittest.main(verbosity=2)
