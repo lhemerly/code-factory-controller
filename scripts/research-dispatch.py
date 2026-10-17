@@ -10,6 +10,7 @@ def module(name,file):
 save=module('goal_storage','goal-runner.py').save
 acceptance=module('final_goal_acceptance','goal-acceptance.py')
 queue_api=module('dispatch_intents','dispatch-queue.py')
+pre_admission=module('pre_admission','pre-admission-recovery.py')
 
 def utc():return datetime.datetime.now(datetime.timezone.utc).isoformat()
 def digest(v):return hashlib.sha256(json.dumps(v,sort_keys=True).encode()).hexdigest()
@@ -159,6 +160,9 @@ class Dispatcher:
   if out.get('goal_id')!=goal['id']:raise RuntimeError('Saved receipt belongs to another goal')
   if out.get('cleanup_confirmed') is not True:raise RuntimeError('Cycle lacks positive process cleanup')
   if out['status']!='accepted':
+   directory=pathlib.Path(out['_result_path']).parent
+   if out.get('phase')=='context_preflight' or (directory/'pre-admission.json').exists():
+    pre_admission.audit(goal['root'],directory,self.m['controller']);return None
    if out['status']=='all_free_unavailable':return None
    recovery=out.get('recovery') or {}
    if recovery.get('execution_stop',{}).get('status')!='confirmed' or recovery.get('accounting',{}).get('status')=='violating':raise RuntimeError('Unconfirmed execution stop or known policy violation; no replacement')
@@ -218,6 +222,10 @@ class Dispatcher:
    gs['state']='paused';gs['reason']=status.get('pause_reason','No completed cycle');return
   p=pathlib.Path(last['result']);out=json.loads(p.read_text());out['_result_path']=str(p)
   if out.get('sequence')!=status['sequence'] or out.get('goal_id')!=goal['id']:raise RuntimeError('Cycle/goal identity mismatch')
+  if out.get('phase')=='context_preflight' or (p.parent/'pre-admission.json').exists():
+   pre_admission.audit(goal['root'],p.parent,self.m['controller'])
+   gs.update(last_result=str(p),usage=out.get('usage'),native_status='not_admitted',state='paused',reason='Admission rejected before worker creation: '+str(out.get('error','inspect retained failure')))
+   return
   # Saved JSON cannot supply the private current-controller observation.
   out.pop('_audited_recovery',None)
   milestone=self.audit(goal,out)
@@ -450,7 +458,9 @@ def owner_resume(manifest):
   if s.get('last_cycle'):
    result=json.loads(pathlib.Path(s['last_cycle']['result']).read_text())
    if result.get('cleanup_confirmed') is not True:raise RuntimeError('Cannot resume without confirmed process cleanup')
-   if result.get('status') not in ('accepted','all_free_unavailable'):
+   if result.get('phase')=='context_preflight' or (pathlib.Path(s['last_cycle']['result']).parent/'pre-admission.json').exists():
+    pre_admission.audit(root,pathlib.Path(s['last_cycle']['result']).parent,manifest['controller'])
+   elif result.get('status') not in ('accepted','all_free_unavailable'):
     recovery=result.get('recovery') or {}
     if result.get('fence_error') or recovery.get('execution_stop',{}).get('status')!='confirmed' or recovery.get('accounting',{}).get('status')=='violating':raise RuntimeError('Cannot resume unconfirmed stop or known policy violation')
   if s.get('status')=='paused' or (root/'PAUSE').exists():

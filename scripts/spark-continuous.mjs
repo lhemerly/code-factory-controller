@@ -28,10 +28,19 @@ let state;try{state=JSON.parse(await readFile(resolve(root,'status.json')))}catc
 const policyHash=sha(JSON.stringify({cfg,goal}));
 if(state.policy_hash&&state.policy_hash!==policyHash){
  const migration=JSON.parse(await readFile(resolve(root,'approved-policy-migration.json')));
- if(migration.from!==state.policy_hash||migration.to!==policyHash||!['remove-research-deadlines','lifecycle-recovery-repair'].includes(migration.kind))throw Error('Approved policy/goal changed; explicit migration required');
- if(migration.kind==='lifecycle-recovery-repair'){
+ if(migration.from!==state.policy_hash||migration.to!==policyHash||!['remove-research-deadlines','lifecycle-recovery-repair','verified-scope-base-advance'].includes(migration.kind))throw Error('Approved policy/goal changed; explicit migration required');
+ if(['lifecycle-recovery-repair','verified-scope-base-advance'].includes(migration.kind)){
   const previous=migration.prior_configuration;
-  if(sha(JSON.stringify({cfg:previous,goal}))!==migration.from||JSON.stringify(Object.fromEntries(Object.entries(previous).filter(([k])=>!['controller','controller_sha256'].includes(k))))!==JSON.stringify(Object.fromEntries(Object.entries(cfg).filter(([k])=>!['controller','controller_sha256'].includes(k)))))throw Error('Lifecycle repair cannot broaden runtime permissions, models, scope or verification');
+  const changed=migration.kind==='verified-scope-base-advance'?['scope_base']:['controller','controller_sha256'];
+  if(sha(JSON.stringify({cfg:previous,goal}))!==migration.from||JSON.stringify(Object.fromEntries(Object.entries(previous).filter(([k])=>!changed.includes(k))))!==JSON.stringify(Object.fromEntries(Object.entries(cfg).filter(([k])=>!changed.includes(k)))))throw Error('Lifecycle repair cannot broaden runtime permissions, models, scope or verification');
+ }
+ if(migration.kind==='verified-scope-base-advance'){
+  const published=JSON.parse(await readFile(resolve(root,'verified-scope-publication.json')));
+  if(sha(await readFile(resolve(root,'verified-scope-publication.json')))!==migration.publication_sha256||published.binding?.repository!=='lhemerly/code-factory-controller'||published.binding?.repository_id!==1414818646||published.binding?.private!==true||published.binding?.branch!=='main'||published.intent?.state!=='confirmed'||published.intent?.commit!==cfg.scope_base||published.intent?.ci?.status!=='passed')throw Error('Scope base lacks exact verified private-main publication');
+  const scopeGit=(...args)=>execFileSync('/usr/bin/git',['-C',repo,...args],{encoding:'utf8'}).trim();
+  scopeGit('merge-base','--is-ancestor',cfg.scope_base,state.base);
+  const template=JSON.parse(await readFile(resolve(root,'job-template.json')));
+  if(!approvedScope(scopeGit('diff','--name-only',cfg.scope_base,state.base).split('\n').filter(Boolean),template))throw Error('Published baseline advance changes protected repair scope');
  }
  state.policy_migrations=[...(state.policy_migrations??[]),{...migration,applied_utc:now()}];
 }
@@ -52,13 +61,13 @@ async function runCycle(sequence){
  for(const d of ['home','config','data','cache','state'])await mkdir(resolve(profile,d),{mode:0o700});
  const nativeEnv={...env,HOME:resolve(profile,'home'),XDG_CONFIG_HOME:resolve(profile,'config'),XDG_DATA_HOME:resolve(profile,'data'),XDG_CACHE_HOME:resolve(profile,'cache'),XDG_STATE_HOME:resolve(profile,'state')};
  const operator=randomBytes(32).toString('hex'),worker=randomBytes(32).toString('hex');let password='',native,controller,client,child,parent,work,job,lease,phase='catalog';
- let out={sequence,started_utc:now(),status:'starting',base:state.base,goal_id:goal.id,cleanup_confirmed:false};
+ let out={sequence,started_utc:now(),status:'starting',base:state.base,goal_id:goal.id,cleanup_confirmed:false,admission_requested:false};
  const cycleSave=async()=>{await atomic(resolve(dir,'result.json'),out);state.current={sequence,directory:dir,status:out.status,job,child:child?.id,worktree:work,phase};await persist()};
  const processes=[];
  const red=s=>s.replaceAll(operator,'[redacted]').replaceAll(worker,'[redacted]').replaceAll(password||'\0','[redacted]').split('\n').filter(l=>!/server password|authorization|bearer/i.test(l)).join('\n');
  async function launch(binary,args,vars,cwd,ready){const p=spawn(binary,args,{cwd,env:vars,stdio:['ignore','pipe','pipe']});processes.push(p);let output='';const append=b=>output=(output+b.toString()).slice(-1048576);p.stdout.on('data',append);p.stderr.on('data',append);p._log=()=>red(output);for(let i=0;i<300;i++){const found=ready(output);if(found)return{p,...found};if(p.exitCode!==null||p.signalCode!==null)throw Error('Process startup failed: '+red(output));if(shutdown)throw Error('Operator stopping');await delay(100)}throw Error('Process startup timeout')}
  async function stop(p){if(!p||p.exitCode!==null||p.signalCode!==null)return;const ended=new Promise(ok=>p.once('exit',ok));p.kill('SIGTERM');await Promise.race([ended,delay(8000)]);if(p.exitCode===null&&p.signalCode===null){p.kill('SIGKILL');await ended}}
- let controllerURL='http://127.0.0.1:'+await port(),nativeURL='http://127.0.0.1:'+await port();
+ let controllerURL,nativeURL;
  async function op(name,body={}){const res=await fetch(controllerURL+'/operator/'+name,{method:'POST',headers:{authorization:'Bearer '+operator,'content-type':'application/json'},body:JSON.stringify({job_id:job,...body}),signal:AbortSignal.timeout(40000)});const value=await res.json();await atomic(resolve(dir,'operator-'+name+'.json'),value);if(!res.ok)throw Error('Controller '+name+': '+JSON.stringify(value));return value}
  async function startNative(location,factory=false){
   const start=await launch('/usr/bin/bwrap',[...sandbox(cfg,repo,location,profile,protectedPaths),'serve','--hostname','127.0.0.1','--port',new URL(nativeURL).port],{...nativeEnv,...(factory?{PSTACK_FACTORY_URL:controllerURL,PSTACK_FACTORY_PROJECT:cfg.project_id??'spark-full-scroll',PSTACK_FACTORY_TOKEN:worker}:{})},location,o=>{const p=/server password (\S+)/.exec(o);return o.includes('server listening on')&&p?{password:p[1]}:undefined});native=start.p;password=start.password;
@@ -66,6 +75,12 @@ async function runCycle(sequence){
   if((await client.server.info()).version!=='2.0.29')throw Error('Unsupported native runtime');
  }
  try{
+  // Context rejection precedes every controller/native effect and job reservation.
+  phase='context_preflight';
+  const admissionContext=await buildResearchContext({root,repo,state,goal,cfg,beforeSequence:sequence});
+  const task=admissionContext.text;out.task=task;out.context_provenance=admissionContext.provenance;
+  await atomic(resolve(dir,'research-context.json'),admissionContext);
+  phase='catalog';controllerURL='http://127.0.0.1:'+await port();nativeURL='http://127.0.0.1:'+await port();
   await cycleSave();await startNative(repo);await delay(5000);
   const models=freeModels((await client.model.list()).data);await atomic(resolve(dir,'free-catalog.json'),{observed_utc:now(),runtime:'2.0.29',models});state.catalog=models;state.catalog_observed_utc=now();
   out.model=route(models,state.circuits,Date.now());await stop(native);await writeFile(resolve(dir,'catalog-server.log'),native._log());native=undefined;
@@ -77,10 +92,8 @@ async function runCycle(sequence){
   controller=(await launch(cfg.controller,['serve','--config',resolve(dir,'controller.json'),'--listen',new URL(controllerURL).host],{...env,FACTORY_OPERATOR_TOKEN:operator},repo,o=>o.includes('controller listening on')?{}:undefined)).p;
   // Controller native auth is supplied after native start below, before binding.
   const standing=await op('standing-goal',{goal});out.standing_goal=standing;
-  const admissionContext=await buildResearchContext({root,repo,state,goal,cfg,beforeSequence:sequence});
-  const task=admissionContext.text;out.task=task;out.context_provenance=admissionContext.provenance;
-  await atomic(resolve(dir,'research-context.json'),admissionContext);
-  const template=JSON.parse(await readFile(resolve(root,'job-template.json')));await op('admit',{...template,job_id:job,base_commit:state.base,task_brief:task});
+
+  const template=JSON.parse(await readFile(resolve(root,'job-template.json')));out.admission_requested=true;await cycleSave();await op('admit',{...template,job_id:job,base_commit:state.base,task_brief:task});
   const prepared=await op('prepare',{mode:'opencode_v2'});work=prepared.attempt.worktree;out.worktree=work;out.attempt=prepared.attempt.attempt_id;out.git_control_sha256=sha(await readFile(resolve(work,'.git')));lease=new OwnershipLease(()=>op('heartbeat',{attempt_id:out.attempt}),{intervalMs:cfg.ownership_heartbeat_seconds*1000}).start();await lease.tick(true);await cycleSave();
   if(git(work,'rev-parse','--show-toplevel')!==work)throw Error('Worker directory is not actual codebase root');
   if(cfg.venv!=null)await symlink(cfg.venv,resolve(work,'.venv'));
@@ -116,7 +129,7 @@ async function runCycle(sequence){
   const changed=git(work,'status','--porcelain','--untracked-files=all');out.diff_status=changed;
   if(!changed)throw Error('No implementation/evidence change; inspect independent goal feedback and required behavior');
   if(sha(await readFile(resolve(work,'.git')))!==out.git_control_sha256)throw Error('Git ownership scope violation');
-  if(!approvedScope(git(work,'diff','--name-only',cfg.initial_base).split('\n').filter(Boolean),template))throw Error('Protected/allowed path scope violation');
+  if(!approvedScope(git(work,'diff','--name-only',cfg.scope_base??cfg.initial_base).split('\n').filter(Boolean),template))throw Error('Protected/allowed path scope violation');
   git(work,'add','--',...template.allowed_paths.filter(p=>{try{execFileSync('/usr/bin/test',['-e',resolve(work,p)]);return true}catch{return false}}));
   if(!git(work,'diff','--cached','--name-only'))throw Error('No approved candidate changes');
   git(work,'commit','-m',commitSubject(cfg,goal,sequence));out.candidate=git(work,'rev-parse','HEAD');out.scope_approved=true;
@@ -150,7 +163,7 @@ async function runCycle(sequence){
    try{
     const template=JSON.parse(await readFile(resolve(root,'job-template.json')));
     if(sha(await readFile(resolve(work,'.git')))!==out.git_control_sha256)throw Error('Git ownership scope violation');
-    if(!approvedScope(git(work,'diff','--name-only',cfg.initial_base).split('\n').filter(Boolean),template))throw Error('Protected/allowed path scope violation');
+    if(!approvedScope(git(work,'diff','--name-only',cfg.scope_base??cfg.initial_base).split('\n').filter(Boolean),template))throw Error('Protected/allowed path scope violation');
     const delta=git(work,'diff','--stat');
     if(delta){
      // Unaccepted WIP remains explicit; only a later exact candidate receipt may accept it.
@@ -207,6 +220,9 @@ while(!shutdown){
   if(oneCycle)break;
   for(let i=0;i<cfg.unavailable_backoff_seconds&&!shutdown;i++)await delay(1000);continue;
  }else{
+  if(out.phase==='context_preflight'&&out.admission_requested===false&&out.cleanup_confirmed&&!out.job_id){
+   state.current=null;await pause('Admission context rejected before execution: '+out.error);break;
+  }
   // Never retry an uncertain execution. Unknown accounting stays unknown in immutable cycle evidence.
   // A fresh independently admitted job can follow an owned, positively stopped worker; no old grant/receipt is reused.
   if(out.recovery?.accounting?.status==='violating'){await pause('Known accounting/model policy violation; no automatic fallback: '+out.error);break}

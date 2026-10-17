@@ -109,6 +109,11 @@ test('restart refuses uncertain ownership even with a completed result and stale
  await writeFile(join(c.dir,'result.json'),JSON.stringify({...c.record,cleanup_confirmed:false}));
  await assert.rejects(buildResearchContext(f.input),/confirmed ownership/);
 });
+test('saved not-admitted flags cannot bypass independent recovery audit',async t=>{
+ const f=await fixture(t),c=await f.cycle(1,f.first,false);
+ await writeFile(join(c.dir,'result.json'),JSON.stringify({...c.record,cleanup_confirmed:false,_not_admitted:{kind:'not_admitted'}}));
+ await assert.rejects(buildResearchContext(f.input),/confirmed ownership/);
+});
 
 test('budget uses UTF-8 bytes, matching the controller admission contract',async t=>{
  const f=await fixture(t);f.input.goal.objective='界'.repeat(2700);
@@ -168,6 +173,11 @@ async function failedCandidate(t){
  // candidate SHA advanced state.base without any accepted milestone.
  const f=await fixture(t);f.input.cfg.initial_base=f.first;await evaluation(f);await f.cycle(1,f.second,false);f.input.state.base=f.second;return f;
 }
+test('admission preserves pinned instructions and receipt identities when feedback excerpts exceed budget',async t=>{
+ const f=await fixture(t);const task='Preserve these approved instructions: '+'X'.repeat(4200);await writeFile(join(f.root,'task.txt'),task);
+ const {record,receipt}=await evaluation(f);await writeFile(receipt.stderr,'S'.repeat(15000));receipt.stderr_sha256=sha(await readFile(receipt.stderr));record.result.receipts=[receipt,{...receipt,check_id:'second-component'}];await writeFile(join(f.root,'goal-evaluation.json'),JSON.stringify(record));
+ const c=await buildResearchContext(f.input);assert.ok(Buffer.byteLength(c.text)<=7900);assert.ok(c.text.includes(task));assert.match(c.text,/log_excerpts_omitted_for_budget/);assert.match(c.text,/second-component/);assert.equal(c.provenance.goal_evaluation_sha256,sha(await readFile(join(f.root,'goal-evaluation.json'))));
+});
 test('failed candidate retains approved baseline feedback without claiming acceptance',async t=>{
  const f=await failedCandidate(t);const context=await buildResearchContext(f.input);
  assert.match(context.text,new RegExp('EXACT REPOSITORY BASE: '+f.second));assert.match(context.text,/UNACCEPTED input/);

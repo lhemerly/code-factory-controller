@@ -278,3 +278,13 @@ private-path boundaries, unknown interrupted accounting and independent acceptan
 remain unchanged. This guards the repeated wrong-path/tool-argument behavior
 observed in the first live self-improvement attempts, without an elapsed cutoff
 for productive work or scientific experimentation.
+
+## Failure before admission
+
+The supervisor builds the complete context before starting a controller or native process. Oversized instructions remain an explicit setup failure; required text is never silently truncated. A rejected preflight has no job, session, native-stop receipt or settled billing status. Compact duplicate pinned instructions while retaining the approved goal and verifier contract.
+
+For a retained failure from the older reservation order, the owner may run `pre-admission-recovery.py reconcile --manifest <launch.json> --goal <id> --owned-receipt <owner.process.json>`. The owner must be quiescent and the original result unchanged. Recovery takes the existing pool/supervisor locks, validates the owned receipt/plan, requires the controller's exact no-job verdict, and checks all job/attempt/grant/request/receipt/event/step tables are empty. Any actual worker identity, native marker, user pause, live controller, missing ledger, changed controller or unrelated permission failure blocks this path. It writes a separate hash-bound `not_admitted` observation and reconciles only mutable owner state; it never invents an execution stop or rewrites the failed result. Every subsequent use rechecks the ledger and receipt.
+
+Publishing a runtime fix while a queued repair input descends from an older source requires an ordinary local merge of the exact verified published baseline. `pre-admission-recovery.py advance-scope` binds that merge to the confirmed private-main Publisher state and checks the diff against the unchanged allowed/protected paths. The owner-only policy migration changes only the verified scope baseline; the original goal, initial evaluation, model policy and publication binding stay unchanged. The merged repair input remains unaccepted. Both owner-record updates retain recovery journals.
+
+The queue fixture source policy rejects bare-repository commands, Git URL rewriting, external socket aliases and constructor bypass before executing candidate fixtures. Comments describing prohibited operations remain ordinary text. Fake remotes must preserve the real controller and Publisher receipt checks.

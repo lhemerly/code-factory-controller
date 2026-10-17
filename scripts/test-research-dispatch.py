@@ -365,4 +365,7 @@ class RecoveredAccounting(unittest.TestCase):
   f=Fixture();f.setUp();self.addCleanup(f.doCleanups);goal=f.goals[0];f.fake(goal,{'expected_sequence':1},status='failed');root=pathlib.Path(goal['root']);status=D.queue_api.read(root/'status.json');path=pathlib.Path(status['last_cycle']['result']);out=D.queue_api.read(path);out['usage']=self.original;out['_audited_recovery']=self.recovery;D.save(path,out)
   d=f.manager(audit=lambda *_:None);d.finish(goal,status);self.assertEqual(d.s['goals'][goal['id']]['usage'],self.original)
 
+_pre_spec=importlib.util.spec_from_file_location('admission_regressions',ROOT/'test-pre-admission-recovery.py');_pre=importlib.util.module_from_spec(_pre_spec);_pre_spec.loader.exec_module(_pre)
+PreAdmissionRegression=_pre.PreAdmissionRegression
+
 if __name__=='__main__':unittest.main(verbosity=2)
