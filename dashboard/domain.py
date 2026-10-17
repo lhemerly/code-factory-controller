@@ -149,9 +149,19 @@ RECONCILED_IDENTITY_FIELDS = (
     "status",
 )
 
+# Run identity that must be positively present (nonempty) on both the original
+# and reconciled records before any recovered usage may attest. Exact equality
+# alone is not enough: a missing value (None) or an empty string on both sides
+# would otherwise look "matched" and let an anonymous run settle usage.
+REQUIRED_IDENTITY_FIELDS = ("goal_id", "job_id", "attempt", "child")
+
 
 def _is_count(value) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _nonempty_identity(value) -> bool:
+    return isinstance(value, str) and value != ""
 
 
 def _provenance_targets_this_result(reference, cycle_rel: str) -> bool:
@@ -186,7 +196,17 @@ def _reconciled_tokens(cycle: dict):
     for field in RECONCILED_IDENTITY_FIELDS:
         if rec.get(field) != result.get(field):
             return None
+    # The run identity must be present and nonempty on both records: equal
+    # None/empty values are an unknown identity, never an attestation.
+    for field in REQUIRED_IDENTITY_FIELDS:
+        if not _nonempty_identity(result.get(field)) or not _nonempty_identity(rec.get(field)):
+            return None
     if rec.get("fence_error") or rec.get("prior_fence_error") != result.get("fence_error"):
+        return None
+    # Only a positively failed original cycle with confirmed host cleanup can
+    # be reconciled; the attestation cannot upgrade a run that never failed or
+    # was never positively cleaned up.
+    if result.get("status") != "failed" or result.get("cleanup_confirmed") is not True:
         return None
     if rec.get("execution_stop") != "confirmed" or rec.get("cleanup_confirmed") is not True:
         return None

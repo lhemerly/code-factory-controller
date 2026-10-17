@@ -259,6 +259,18 @@ class ReconciledRecoveryTest(unittest.TestCase):
     def save_rec(self):
         self.write("reconciled-result.json", self.rec)
 
+    def rewrite_original(self):
+        """Persist the edited original result and re-bind the saved digest.
+
+        The attestation must always carry the digest of the current original
+        bytes, so a rejected case fails for the intended reason, not a stale
+        digest.
+        """
+        self.write("result.json", self.original)
+        self.rec["reconciliation"]["original_result_sha256"] = hashlib.sha256(
+            (self.cycle / "result.json").read_bytes()
+        ).hexdigest()
+
     def rejects(self):
         """Any refused attestation must fall back, visibly unsettled."""
         self.save_rec()
@@ -350,6 +362,49 @@ class ReconciledRecoveryTest(unittest.TestCase):
         self.rejects()
         self.rec["recovery"]["execution_stop"]["status"] = "confirmed"
         self.rec["cleanup_confirmed"] = False
+        self.rejects()
+
+    def test_missing_or_empty_execution_identifiers_are_unknown(self):
+        """An absent or empty attempt/session identity on both records is an
+        unknown run, never an attestation: equal None/empty must not settle."""
+        original = copy.deepcopy(self.original)
+        rec = copy.deepcopy(self.rec)
+        for missing in (None, ""):
+            with self.subTest(missing=missing):
+                self.original = copy.deepcopy(original)
+                self.rec = copy.deepcopy(rec)
+                self.original.update(attempt=missing, child=missing)
+                self.rec.update(attempt=missing, child=missing)
+                self.rec["recovery"].update(attempt_id=missing, session_id=missing)
+                self.rec["recovery"]["accounting"]["observations"][0]["id"] = missing
+                self.rewrite_original()
+                self.rejects()
+
+    def test_missing_goal_or_job_identity_is_unknown(self):
+        """An original with no goal_id/job_id cannot attest recovered usage,
+        even when the attestation omits the same keys."""
+        original = copy.deepcopy(self.original)
+        rec = copy.deepcopy(self.rec)
+        for key in ("goal_id", "job_id"):
+            with self.subTest(key=key):
+                self.original = copy.deepcopy(original)
+                self.rec = copy.deepcopy(rec)
+                self.original.pop(key, None)
+                self.rec.pop(key, None)
+                self.rewrite_original()
+                self.rejects()
+
+    def test_original_without_positive_host_cleanup_is_unknown(self):
+        """Only a positively failed original with confirmed host cleanup may be
+        reconciled: unconfirmed cleanup, or a non-failed original even when
+        both records agree on status, stays unknown."""
+        self.original["cleanup_confirmed"] = False
+        self.rewrite_original()
+        self.rejects()
+        # Both records agree the original did not fail; still not attestable.
+        self.original.update(cleanup_confirmed=True, status="accepted")
+        self.rec.update(cleanup_confirmed=True, status="accepted")
+        self.rewrite_original()
         self.rejects()
 
 
