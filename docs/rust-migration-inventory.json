@@ -1,0 +1,300 @@
+{
+  "baseline_commit": "1899b9d87df399709d449a4ad9ccd15f55e76fa5",
+  "production_python_independent": false,
+  "python_files": [
+    {
+      "path": "dashboard/__init__.py",
+      "role": "production_package_metadata",
+      "migration_status": "pending"
+    },
+    {
+      "path": "dashboard/__main__.py",
+      "role": "production",
+      "migration_status": "pending"
+    },
+    {
+      "path": "dashboard/domain.py",
+      "role": "production",
+      "migration_status": "pending"
+    },
+    {
+      "path": "dashboard/loader.py",
+      "role": "production",
+      "migration_status": "pending"
+    },
+    {
+      "path": "dashboard/render.py",
+      "role": "production",
+      "migration_status": "pending"
+    },
+    {
+      "path": "dashboard/server.py",
+      "role": "production",
+      "migration_status": "pending"
+    },
+    {
+      "path": "dashboard/tests/__init__.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "dashboard/tests/support.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "dashboard/tests/test_current_state.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "dashboard/tests/test_fixtures.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "dashboard/tests/test_loader_safety.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "dashboard/tests/test_real_state.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "dashboard/tests/test_server.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "dashboard/tests/test_state_root.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/check-bonsai.py",
+      "role": "production",
+      "migration_status": "pending"
+    },
+    {
+      "path": "scripts/code-factory.py",
+      "role": "production",
+      "migration_status": "pending"
+    },
+    {
+      "path": "scripts/dispatch-queue.py",
+      "role": "production",
+      "migration_status": "pending"
+    },
+    {
+      "path": "scripts/fake-research-cycle.py",
+      "role": "fixture",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/github-review.py",
+      "role": "production",
+      "migration_status": "pending"
+    },
+    {
+      "path": "scripts/goal-acceptance.py",
+      "role": "production",
+      "migration_status": "native_replacement_tested_legacy_entrypoint_retained",
+      "rust": "src/goal_acceptance.rs"
+    },
+    {
+      "path": "scripts/goal-runner.py",
+      "role": "production",
+      "migration_status": "native_replacement_tested_legacy_entrypoint_retained",
+      "rust": "src/goal_runner.rs"
+    },
+    {
+      "path": "scripts/main-publication.py",
+      "role": "production",
+      "migration_status": "pending"
+    },
+    {
+      "path": "scripts/owner-interruption.py",
+      "role": "production",
+      "migration_status": "pending"
+    },
+    {
+      "path": "scripts/permission-block-resolution.py",
+      "role": "production",
+      "migration_status": "pending"
+    },
+    {
+      "path": "scripts/pre-admission-recovery.py",
+      "role": "production",
+      "migration_status": "pending"
+    },
+    {
+      "path": "scripts/queue-fixture-policy.py",
+      "role": "fixture",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/queue-handoff.py",
+      "role": "production",
+      "migration_status": "pending"
+    },
+    {
+      "path": "scripts/research-dispatch.py",
+      "role": "production",
+      "migration_status": "pending"
+    },
+    {
+      "path": "scripts/spark-control.py",
+      "role": "production",
+      "migration_status": "pending"
+    },
+    {
+      "path": "scripts/test-bonsai-protocol.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-cli-updater.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-dispatch-cli.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-dispatch-queue.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-github-controller.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-github-review.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-goal-acceptance.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-goal-baseline-cli.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-goal-feedback-cli.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-goal-process-lifecycle.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-goal-runner.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-lock-corroboration.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-main-controller.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-main-publication.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-owner-interruption.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-permission-block-resolution.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-pre-admission-recovery.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-queue-cli.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-queue-handoff.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-research-dispatch.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-rust-goal-acceptance.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-rust-goal-runner.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-spark-control.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-trace-ledger.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-worker-regression-fixture.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/trace-ledger.py",
+      "role": "production",
+      "migration_status": "pending"
+    },
+    {
+      "path": "tests/fixtures/owned-native-recovery/check.py",
+      "role": "fixture",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "tests/fixtures/owned-native-recovery/historical-stop-audit.py",
+      "role": "fixture",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "tests/fixtures/owned-native-recovery/verify.py",
+      "role": "fixture",
+      "migration_status": "retained_test_evidence"
+    }
+  ],
+  "remaining_js_python_callsite": "scripts/research-context.mjs",
+  "js_ts_integration": "retained; no production callsites changed"
+}

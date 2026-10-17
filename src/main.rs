@@ -15,6 +15,10 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Whole-goal acceptance or read-only receipt audit (JSON request on stdin).
+    GoalAcceptance,
+    /// Execute an approved durable backlog with whole-goal acceptance.
+    Run(code_factory_controller::goal_runner::Options),
     #[command(hide = true)]
     AgySupervisor {
         #[arg(long)]
@@ -86,6 +90,18 @@ fn main() -> Result<()> {
     if let Command::VerifierSupervisor { plan } = &cli.command {
         return code_factory_controller::supervisor::run(plan);
     }
+    if let Command::GoalAcceptance = &cli.command {
+        use std::io::Read;
+        let mut input = Vec::new();
+        std::io::stdin().take(16_777_217).read_to_end(&mut input)?;
+        anyhow::ensure!(input.len() <= 16_777_216, "request exceeds limit");
+        let result = code_factory_controller::goal_acceptance::request(
+            &serde_json::from_slice(&input)?,
+            &std::env::current_exe()?,
+        )?;
+        println!("{}", serde_json::to_string(&result)?);
+        return Ok(());
+    }
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
@@ -93,6 +109,13 @@ fn main() -> Result<()> {
 }
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Command::Run(options) => {
+            let code =
+                code_factory_controller::goal_runner::run(options, &std::env::current_exe()?)
+                    .await?;
+            std::process::exit(code);
+        }
+        Command::GoalAcceptance => unreachable!("handled before runtime initialization"),
         Command::AgySupervisor { .. } => unreachable!("handled before runtime initialization"),
         Command::VerifierSupervisor { .. } => unreachable!("handled before runtime initialization"),
         Command::Tui {

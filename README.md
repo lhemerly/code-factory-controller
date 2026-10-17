@@ -185,6 +185,13 @@ The host-owned verifier is responsible for measuring the required behavior. Prot
 
 ## Sustained implementation backlogs
 
+A staged [Rust migration](docs/rust-migration.md) adds `code-factory-controller run`
+with the same backlog options and Python-compatible state/receipts. The Rust path
+uses supervised whole-goal acceptance and audits saved completion on restart.
+Queue dispatch, recovery, publication, installation and the dashboard still use
+Python; the system-wide migration and live essentials checkpoint remain open.
+
+
 The Linux host runner in `scripts/goal-runner.py` executes an approved sequence of jobs in adapter mode. Each job starts from the previous independently verified integration commit. The runner persists admission intent before contacting the controller, reconciles existing job identities on restart, retains exact integrated receipts and deliveries, and bounds verification rework. It respects controller provider cooldowns and stops on paused, blocked or ambiguous effects.
 
 ```sh

@@ -494,3 +494,76 @@ async fn late_active_tool_state_blocks_delivery_even_after_candidate_acceptance(
     assert!(blocked.delivery.is_none());
     h.abort();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rust_backlog_drives_real_controller_delivery_and_whole_goal_acceptance() {
+    // Only the model transport is fake. The runner, authenticated operator API,
+    // worker Git change, candidate/integrated checks, archive and final checkout
+    // are real. This is offline integration evidence, not a live research goal.
+    use code_factory_controller::{goal_acceptance, goal_runner::Runner, model::digest};
+    let (f, engine, _mock, provider) = setup(false, false, false).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let router = code_factory_controller::http::router(engine.clone(), TOKEN);
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let mut task = serde_json::to_value(f.input("backlog")).unwrap();
+    task.as_object_mut().unwrap().remove("base_commit");
+    let manifest = json!({
+        "goal_id":"offline-real-delivery", "base_commit":f.base, "tasks":[task],
+        "repository":f.config.repository, "required_evidence":["runtime_tests"],
+        "completion_checks":[{"id":"delivered-product","evidence_type":"runtime_tests",
+            "argv":["/bin/sh","-c", "test \"$(cat result.txt)\" = 'adapter-created result' && printf '{\"passed\":true,\"skipped\":false,\"executed\":1,\"failed\":0,\"commit\":\"%s\",\"evidence_type\":\"runtime_tests\"}' \"$FACTORY_VERIFICATION_COMMIT\""]}]
+    });
+    let state = f.temp.path().join("goal-state.json");
+    let verifier = std::path::Path::new(env!("CARGO_BIN_EXE_code-factory-controller"));
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let mut api = |op: String, body: Value| {
+        let client = client.clone();
+        let url = format!("{url}/operator/{op}");
+        async move {
+            Ok(client
+                .post(url)
+                .bearer_auth(TOKEN)
+                .json(&body)
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?)
+        }
+    };
+    let mut runner = Runner::open(manifest.clone(), state.clone()).unwrap();
+    for _ in 0..20 {
+        if !runner.step(&mut api, verifier).await.unwrap() {
+            break;
+        }
+        if engine.get("backlog").is_ok() {
+            engine.adapter_tick("backlog").await.unwrap();
+            engine.advance("backlog").await.unwrap();
+        }
+    }
+    assert_eq!(runner.state["status"], "completed", "{}", runner.state);
+    let done = engine.reconcile_delivery("backlog").unwrap();
+    assert_eq!(done.state, "done");
+    let delivery = done.delivery.as_ref().unwrap();
+    assert_eq!(
+        digest(std::fs::read(delivery["destination"].as_str().unwrap()).unwrap()),
+        delivery["sha256"]
+    );
+    assert!(
+        done.receipt
+            .as_ref()
+            .unwrap()
+            .environment_id
+            .starts_with("clean-integrated-")
+    );
+    let result = runner.state["acceptance"].clone();
+    goal_acceptance::audit_result(&manifest, &result, done.integrated_commit.as_ref().unwrap())
+        .unwrap();
+    let mut resumed = Runner::open(manifest, state).unwrap();
+    assert!(!resumed.step(&mut api, verifier).await.unwrap());
+    assert_eq!(resumed.state["acceptance"], result);
+    assert_eq!(engine.get("backlog").unwrap().attempts, 1);
+    provider.abort();
+    server.abort();
+}

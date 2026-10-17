@@ -46,6 +46,10 @@ jobs:
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
       - run: cargo build --locked
+      - name: Check Rust goal runtime against Python state and receipt contracts
+        run: |
+          python3 scripts/test-rust-goal-acceptance.py
+          python3 scripts/test-rust-goal-runner.py
       - name: Exercise two-goal owner CLI (fake providers, real verification)
         run: |
           python3 scripts/test-dispatch-cli.py
