@@ -2,7 +2,7 @@
 """Foreground, one-slot operator for existing Code Factory goal-cycle runners.
 Native execution and receipts remain authoritative in the existing runtime/controller.
 """
-import argparse, datetime, fcntl, hashlib, importlib.util, json, os, pathlib, shutil, signal, subprocess, sys, time
+import argparse, datetime, fcntl, hashlib, importlib.util, json, os, pathlib, shutil, signal, subprocess, sys, time, uuid
 ROOT=pathlib.Path(__file__).resolve().parent
 
 def module(name,file):
@@ -278,6 +278,23 @@ class Dispatcher:
   try:out=json.loads(p.read_text())
   except Exception:return False
   out['_result_path']=str(p)
+  # Already positively stopped cycles have independent controller evidence and
+  # must not be recovered again; preserve their existing failover instead of
+  # raising or executing another owned helper.
+  current=status.get('current')
+  recovery=out.get('recovery') or {}
+  already_stopped = (
+   out.get('status')=='failed' and
+   out.get('phase') in ('native','native_shells') and
+   not current and
+   out.get('cleanup_confirmed') is True and
+   not out.get('fence_error') and
+   recovery.get('execution_stop',{}).get('status')=='confirmed' and
+   recovery.get('accounting',{}).get('status')!='violating')
+  if already_stopped:
+   self.s['circuits']=merge_circuits(self.s.get('circuits',{}),status.get('circuits',{}))
+   if self.m.get('circuits_file'):save(pathlib.Path(self.m['circuits_file']),self.s['circuits'])
+   return True
   if not self.native_recovery_qualified(goal,status,out):
    if out.get('status')=='failed' and out.get('phase') in ('native','native_shells'):
     raise RuntimeError('Native transport recovery fence: unqualified stopped result')
@@ -286,19 +303,25 @@ class Dispatcher:
   trusted=self.m.get('trusted_files',{})
   if str(helper) not in trusted or hashlib.sha256(helper.read_bytes()).hexdigest()!=trusted[str(helper)]:
    raise RuntimeError('Native recovery helper is not pinned')
+  # Audit any prior owned helper plans before executing another one.
+  state_path=self.path.parent/(goal['id']+'-goal')
+  acceptance.audit_processes(state_path)
   # Persist current phase before helper execution.
   if not self.s['current']:return False
   self.s['current']['phase']='native_recovery'
   self.persist()
-  state_path=self.path.parent/(goal['id']+'-goal')
   outdir=pathlib.Path(str(state_path)+'.acceptance')/'native_recovery'
   outdir.mkdir(parents=True,exist_ok=True)
-  stdout=outdir/'0.stdout'
-  stderr=outdir/'0.stderr'
+  stdout=outdir/(uuid.uuid4().hex+'.stdout')
+  stderr=stdout.with_suffix('.stderr')
   receipt={}
   node=shutil.which('node') or '/usr/bin/node'
   argv=[node,str(helper),str(pathlib.Path(goal['root'])),str(self.m['controller'])]
   env={'PATH':os.environ.get('PATH','/usr/bin:/bin')}
+  commit=out.get('base')
+  if commit is None:commit=status.get('base')
+  if commit is None:commit=goal.get('initial_base')
+  if commit is not None:env['FACTORY_VERIFICATION_COMMIT']=commit
   v2=os.environ.get('FACTORY_OPENCODE_V2_CLIENT')
   if v2 is not None:env['FACTORY_OPENCODE_V2_CLIENT']=v2
   executable=self.m['controller']
