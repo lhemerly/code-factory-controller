@@ -35,10 +35,10 @@ def ci_state(b,checks):
  state='failed' if failed else 'pending' if pending else 'passed' if checks else 'not_configured'
  return state,{'status':state,'checks':checks}
 
-def checked_ci(b,s,field='checks'):
+def checked_ci(b,s):
  # Strict exact-head gate before any main push. Missing, unfinished or failed
  # required checks must fence the push; only a green inventory may proceed.
- checks=s[field];required=b['required_checks']
+ checks=s['checks'];required=b['required_checks']
  if not isinstance(required,list) or not all(isinstance(x,str) and x for x in required):raise ValueError('Explicit required_checks policy missing')
  if len(checks)>100:raise ValueError('CI inventory exceeds bound')
  if any(c.get('status')!='completed' or c.get('conclusion') not in ['success','neutral','skipped'] for c in checks):raise ValueError('Remote CI pending or failed')
@@ -55,7 +55,13 @@ class GitHub:
   suites_resp=self.api(f"repos/{b['repository']}/commits/{target}/check-suites?per_page=100")
   statuses=self.api(f"repos/{b['repository']}/commits/{target}/status?per_page=100")
   if c['total_count']>100 or suites_resp['total_count']>100 or statuses['total_count']>100:raise ValueError('CI inventory incomplete')
-  checks=[{'name':x['name'],'status':x['status'],'conclusion':x.get('conclusion')} for x in c['check_runs']]
+  # Run IDs order creation: queued reruns may have no start/completion timestamp.
+  latest_checks={}
+  for row in c['check_runs']:
+   if row.get('head_sha')!=target:continue
+   if not isinstance(row.get('id'),int):raise ValueError('CI run identity missing')
+   if row['name'] not in latest_checks or row['id']>latest_checks[row['name']]['id']:latest_checks[row['name']]=row
+  checks=[{'name':x['name'],'status':x['status'],'conclusion':x.get('conclusion')} for x in latest_checks.values()]
   checks += [{'name':x['context'],'status':'completed' if x['state']!='pending' else 'pending','conclusion':'success' if x['state']=='success' else 'failure'} for x in statuses['statuses']]
   suite_by_id={s.get('id'):s for s in suites_resp.get('check_suites',[])}
   branch=b.get('branch') or 'main'
@@ -67,7 +73,7 @@ class GitHub:
    if suite.get('head_sha')!=target:continue
    if run.get('head_sha')!=target:continue
    name=run.get('name')
-   key=(run.get('completed_at') or run.get('started_at') or '',run.get('id') or 0)
+   key=run['id']
    if name not in latest or key>latest[name][0]:
     latest[name]=(key,run)
   main_checks=[{'name':run['name'],'status':run['status'],'conclusion':run.get('conclusion')} for _,run in latest.values()]

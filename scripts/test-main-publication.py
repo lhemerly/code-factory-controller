@@ -2,8 +2,9 @@ import copy,importlib.util,json,pathlib,subprocess,tempfile,unittest
 from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('mainpub',pathlib.Path(__file__).with_name('main-publication.py'));M=importlib.util.module_from_spec(spec);spec.loader.exec_module(M)
 class Remote:
- def __init__(self,b,head):self.b=b;self.head=head;self.pushes=[];self.fail=None;self.checks=[];self.main_checks=[]
- def snapshot(self,b,commit=None):return {'repository':{'id':b['repository_id'],'full_name':b['repository'],'private':True,'default_branch':'main'},'head':self.head,'checked_commit':commit or self.head,'checks':copy.deepcopy(self.checks),'main_checks':copy.deepcopy(self.main_checks)}
+ # Legacy shared mock models immediate main CI unless a test explicitly supplies a separate inventory.
+ def __init__(self,b,head):self.b=b;self.head=head;self.pushes=[];self.fail=None;self.checks=[];self.main_checks=None
+ def snapshot(self,b,commit=None):return {'repository':{'id':b['repository_id'],'full_name':b['repository'],'private':True,'default_branch':'main'},'head':self.head,'checked_commit':commit or self.head,'checks':copy.deepcopy(self.checks),'main_checks':copy.deepcopy(self.checks if self.main_checks is None else self.main_checks)}
  def push(self,b,repo,commit):
   self.pushes.append(commit)
   if self.fail=='before':raise RuntimeError('lost before push')
@@ -111,7 +112,7 @@ class PreflightRemote(Remote):
  def push_preflight(self,b,repo,commit,branch):
   self.preflight_pushes.append((branch,commit))
   if self.preflight_fail=='before':raise RuntimeError('unobserved preflight failure')
-  self.refs[branch]=commit;self.checks=[{'name':'controller','status':'in_progress','conclusion':None}];self.main_checks=[]
+  self.refs[branch]=commit;self.checks=[{'name':'controller','status':'in_progress','conclusion':None}];self.main_checks=None
   if self.preflight_fail=='after':raise RuntimeError('lost preflight response')
 
 class PreflightTests(unittest.TestCase):
@@ -222,5 +223,12 @@ class AdapterTests(unittest.TestCase):
   target=self.commit
   remote=M.GitHub();remote.api=self._api([],[],[{'context':'ci','state':'success'}]);s=remote.snapshot(self.b,target)
   self.assertEqual(s['main_checks'],[])
+ def test_queued_rerun_without_timestamps_fences_prior_green(self):
+  target=self.commit;suites=[{'id':20,'head_branch':'main','head_sha':target}]
+  rows=[{'id':1,'name':'controller','status':'completed','conclusion':'success','head_sha':target,'check_suite':{'id':20},'completed_at':'2026-01-01T00:01:00Z'},
+        {'id':2,'name':'controller','status':'queued','conclusion':None,'head_sha':target,'check_suite':{'id':20}}]
+  remote=M.GitHub();remote.api=self._api(rows,suites);observed=remote.snapshot(self.b,target)
+  self.assertEqual(M.ci_state(self.b,observed['main_checks'])[0],'pending')
+  self.assertEqual(observed['checks'][0]['status'],'queued')
 
 if __name__=='__main__':unittest.main()
