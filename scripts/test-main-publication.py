@@ -169,6 +169,19 @@ class PreflightTests(unittest.TestCase):
   self.assertEqual(len(self.remote.pushes),1)
   self.assertEqual(M.read(self.p.root/'state.json')['history'],[])
 
+ def test_strict_failed_main_ci_then_green_confirms_once(self):
+  self.assertEqual(self.publish()['state'],'awaiting_ci')
+  self.ready()
+  self.remote.main_checks=[{'name':'controller','status':'completed','conclusion':'failure'}]
+  with self.assertRaisesRegex(ValueError,'CI failed'):self.publish()
+  self.assertEqual(len(self.remote.pushes),1)
+  self.assertEqual(M.read(self.p.root/'state.json')['intent']['state'],'remote_observed')
+  self.remote.main_checks=[{'name':'controller','status':'completed','conclusion':'success'}]
+  self.assertEqual(self.publish()['state'],'confirmed')
+  self.publish()
+  self.assertEqual(len(self.remote.pushes),1)
+  self.assertEqual(len(M.read(self.p.root/'state.json')['history']),1)
+
 class AdapterTests(unittest.TestCase):
  def _api(self,rows,suites,statuses=None):
   target=self.commit;repo=self.b['repository']
