@@ -98,7 +98,7 @@ def reconcile(manifest_path,goal_id,owned_path):
   before={'status':status,'state':state};save(journal,before)
   status={**status,'status':'waiting','current':None,'last_cycle':{'sequence':out['sequence'],'status':'failed','result':str(directory/'result.json')}};status.pop('pause_reason',None)
   status.setdefault('pre_admission_reconciliations',[]).append({'sequence':out['sequence'],'result_sha256':proof['original_result_sha256'],'kind':'not_admitted'})
-  state={**state,'current':None,'status':'waiting'};state.pop('reason',None);gs=state['goals'][goal_id];gs.update(state='ready',last_result=str(directory/'result.json'),native_status='not_admitted');gs.pop('reason',None)
+  state={**state,'current':None,'status':'waiting'};state.pop('reason',None);gs=state['goals'][goal_id];gs.update(state='ready',last_result=str(directory/'result.json'),native_status='not_admitted',usage=out.get('usage'),model=out.get('model'));gs.pop('reason',None)
   save(root/'status.json',status);save(state_path,state);journal.unlink()
   return proof
  finally:locks.close()

@@ -54,11 +54,11 @@ class PreAdmissionRegression(unittest.TestCase):
  def recovery_manifest(self):
   (self.root/'repository').mkdir();state=self.root/'dispatch.json';self.state=state
   self.save(self.mp,{'goals':[{'id':'goal','root':str(self.root),'repository':str(self.root/'repository')}],'controller':str(self.controller),'pool_lock':str(self.root/'pool.lock'),'state':str(state),'trusted_files':{str(self.controller):A.sha(self.controller)}})
-  self.save(state,{'status':'needs_attention','current':{'goal':'goal','expected_sequence':2},'goals':{'goal':{'state':'paused'}}})
+  self.save(state,{'status':'needs_attention','current':{'goal':'goal','expected_sequence':2},'goals':{'goal':{'state':'paused','usage':{'tokens':{'input':999}},'model':'previous-model'}}})
   self.save(self.root/'status.json',{'sequence':2,'status':'paused','current':{'sequence':2},'pause_reason':'Execution/recovery evidence incomplete: '+self.out['error']})
  def test_owner_reconciliation_preserves_failure_and_has_no_native_stop_claim(self):
   self.recovery_manifest();before=(self.dir/'result.json').read_bytes();proof=A.reconcile(self.mp,'goal',self.process)
-  self.assertEqual(before,(self.dir/'result.json').read_bytes());self.assertIsNone(json.loads((self.root/'status.json').read_text())['current']);self.assertIsNone(json.loads(self.state.read_text())['current']);self.assertEqual(json.loads(self.state.read_text())['goals']['goal']['native_status'],'not_admitted');self.assertNotIn('execution_stop',proof);self.assertEqual(A.audit(self.root,self.dir,self.controller),proof)
+  self.assertEqual(before,(self.dir/'result.json').read_bytes());self.assertIsNone(json.loads((self.root/'status.json').read_text())['current']);self.assertIsNone(json.loads(self.state.read_text())['current']);self.assertEqual(json.loads(self.state.read_text())['goals']['goal']['native_status'],'not_admitted');self.assertIsNone(json.loads(self.state.read_text())['goals']['goal']['usage']);self.assertIsNone(json.loads(self.state.read_text())['goals']['goal']['model']);self.assertNotIn('execution_stop',proof);self.assertEqual(A.audit(self.root,self.dir,self.controller),proof)
  def test_user_pause_and_live_pool_refuse_reconciliation(self):
   self.recovery_manifest();(self.root/'PAUSE').write_text('user pause')
   with self.assertRaises(ValueError):A.reconcile(self.mp,'goal',self.process)

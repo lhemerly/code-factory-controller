@@ -224,7 +224,7 @@ class Dispatcher:
   if out.get('sequence')!=status['sequence'] or out.get('goal_id')!=goal['id']:raise RuntimeError('Cycle/goal identity mismatch')
   if out.get('phase')=='context_preflight' or (p.parent/'pre-admission.json').exists():
    pre_admission.audit(goal['root'],p.parent,self.m['controller'])
-   gs.update(last_result=str(p),usage=out.get('usage'),native_status='not_admitted',state='paused',reason='Admission rejected before worker creation: '+str(out.get('error','inspect retained failure')))
+   gs.update(last_result=str(p),usage=out.get('usage'),model=out.get('model'),native_status='not_admitted',state='paused',reason='Admission rejected before worker creation: '+str(out.get('error','inspect retained failure')))
    return
   # Saved JSON cannot supply the private current-controller observation.
   out.pop('_audited_recovery',None)
