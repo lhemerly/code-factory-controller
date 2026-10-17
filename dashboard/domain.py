@@ -6,6 +6,10 @@ Rules encoded here (standing-goal accounting contract):
   never counted as newly generated tokens;
 - missing usage is unknown, never zero; partial/unknown accounting stays
   visibly partial;
+- recovered usage is accepted only from a hash-bound saved reconciliation
+  attestation that binds the exact original result bytes and run identity,
+  and its single session observation replaces (never adds to) stale native
+  checkpoint tokens; anything unattested falls back as unknown/partial;
 - active time is recorded cycle start->end time; waiting is the remainder of
   elapsed research time; missing timestamps make the split partial;
 - staleness is judged from timestamps only (a recorded process id is never
@@ -121,8 +125,124 @@ def _native_tokens(cycle: dict):
     return None
 
 
+# --- saved reconciliation (recovered usage) --------------------------------
+#
+# A controller-recovered cycle keeps its original failed result.json and writes
+# a sibling reconciled-result.json attestation carrying the exact original
+# digest, the unchanged run identity, and the settled-zero session accounting.
+# The dashboard is read-only and has no live controller: it accepts the saved
+# attestation only when every binding check passes, and otherwise fails closed
+# to the existing result/native/unknown fallbacks (never a settled zero).
+
+RECONCILED_IDENTITY_FIELDS = (
+    "sequence",
+    "ended_utc",
+    "job_id",
+    "goal_id",
+    "attempt",
+    "session",
+    "child",
+    "parent",
+    "worktree",
+    "base",
+    "candidate",
+    "status",
+)
+
+
+def _is_count(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _provenance_targets_this_result(reference, cycle_rel: str) -> bool:
+    """The attestation may name only this cycle's exact result.json."""
+    if reference == "result.json":  # sibling relative path inside the cycle
+        return True
+    if not isinstance(reference, str) or not reference.startswith("/"):
+        return False
+    # Captured absolute origin from the source machine: only the exact
+    # same-cycle tail is accepted, and the file itself is never opened.
+    return reference.endswith("/" + cycle_rel + "/result.json")
+
+
+def _reconciled_tokens(cycle: dict):
+    """Validated recovered usage for one cycle, or None if not attestable."""
+    files = cycle.get("files") or {}
+    rec = files.get("reconciled-result.json")
+    if not isinstance(rec, dict):
+        return None
+    result = files.get("result.json")
+    digest = cycle.get("result_sha256")
+    cycle_rel = cycle.get("rel")
+    if not isinstance(result, dict) or not isinstance(digest, str) or not cycle_rel:
+        return None
+    provenance = rec.get("reconciliation")
+    if not isinstance(provenance, dict):
+        return None
+    if provenance.get("original_result_sha256") != digest:
+        return None
+    if not _provenance_targets_this_result(provenance.get("original_result"), cycle_rel):
+        return None
+    for field in RECONCILED_IDENTITY_FIELDS:
+        if rec.get(field) != result.get(field):
+            return None
+    if rec.get("fence_error") or rec.get("prior_fence_error") != result.get("fence_error"):
+        return None
+    if rec.get("execution_stop") != "confirmed" or rec.get("cleanup_confirmed") is not True:
+        return None
+    recovery = rec.get("recovery")
+    if not isinstance(recovery, dict):
+        return None
+    stop = recovery.get("execution_stop")
+    if not isinstance(stop, dict) or stop.get("status") != "confirmed":
+        return None
+    stop_id = recovery.get("stop_id")
+    if not isinstance(stop_id, str) or not stop_id:
+        return None
+    if recovery.get("attempt_id") != result.get("attempt"):
+        return None
+    session_id = recovery.get("session_id")
+    if session_id != result.get("child"):
+        return None
+    accounting = recovery.get("accounting")
+    if not isinstance(accounting, dict) or accounting.get("status") != "settled_zero":
+        return None
+    rows = accounting.get("observations")
+    if not isinstance(rows, list):
+        return None
+    # Exactly one session observation counts; message observations are
+    # duplicates of the same session and are never added.
+    sessions = [row for row in rows if isinstance(row, dict) and row.get("source") == "session"]
+    if len(sessions) != 1:
+        return None
+    row = sessions[0]
+    if row.get("id") != session_id:
+        return None
+    cost = row.get("cost")
+    if isinstance(cost, bool) or not isinstance(cost, (int, float)) or cost != 0:
+        return None
+    tokens = row.get("tokens")
+    cache = tokens.get("cache") if isinstance(tokens, dict) else None
+    if not isinstance(tokens, dict) or not isinstance(cache, dict):
+        return None
+    if not all(_is_count(tokens.get(key)) for key in ("input", "output", "reasoning")):
+        return None
+    if not all(_is_count(cache.get(key)) for key in ("read", "write")):
+        return None
+    return {
+        "tokens": tokens,
+        "cost": cost,
+        "model": row.get("model"),
+        "accounting_status": "settled_zero",
+        "source": "reconciled",
+    }
+
+
 def cycle_usage(cycle: dict):
     """Return (usage-or-None, source) for one cycle without double counting."""
+    recovered = _reconciled_tokens(cycle)
+    if recovered is not None:
+        return recovered, "reconciled"
     result = cycle.get("files") or {}
     result = result.get("result.json") if isinstance(result, dict) else None
     usage = result.get("usage") if isinstance(result, dict) else None
@@ -167,9 +287,12 @@ def build_tokens(cycles: list[dict]) -> dict:
     counts = {"settled": 0, "unknown": 0, "missing": 0, "unreported": 0}
     token_dicts: list[dict] = []
     costs = []
+    reconciled = 0
     for cycle in cycles:
-        usage, _source = cycle_usage(cycle)
+        usage, source = cycle_usage(cycle)
         counts[accounting_state(usage)] += 1
+        if source == "reconciled":
+            reconciled += 1
         if usage is None:
             continue
         token_dicts.append(usage.get("tokens") or {})
@@ -230,6 +353,12 @@ def build_tokens(cycles: list[dict]) -> dict:
         "cycles_total": total_cycles,
         "cycles_with_usage": len(token_dicts),
     }
+    if reconciled:
+        notes.append(
+            f"{reconciled} of {total_cycles} cycles counted once from a hash-bound saved "
+            "reconciliation attestation of the original result — a saved record, "
+            "not a live controller or approval check"
+        )
 
     if costs:
         cost = {"reported": float(sum(costs)), "known": True}

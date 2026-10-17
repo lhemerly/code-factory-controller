@@ -25,6 +25,7 @@ CAPTURE_REL = "capture.json"
 GOAL_FILES = ("goal.json", "status.json")
 CYCLE_FILES = (
     "result.json",
+    "reconciled-result.json",
     "native-session.json",
     "native-session-final.json",
     "accepted.json",
@@ -154,6 +155,11 @@ def _load_cycles(root: Path, goal_dir: str, reads: list[str]) -> list[dict]:
                 continue
             record["files"][name] = data
             reads.append(rel)
+        if "reconciled-result.json" in record["files"]:
+            # A saved reconciliation is only evidence when bound to the exact
+            # bytes of its sibling result.json; the digest is computed here,
+            # once, from the already-allowlisted cycle directory.
+            record["result_sha256"] = sha256_file(root, f"{cycle_rel}/result.json")
         cycles.append(record)
     return cycles
 

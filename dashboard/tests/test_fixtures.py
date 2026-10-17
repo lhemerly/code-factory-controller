@@ -4,8 +4,12 @@ stale activity, missing metrics, incomplete goals, active-vs-waiting ownership.
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -158,6 +162,195 @@ class MissingMetricsFixtureTest(unittest.TestCase):
         self.assertFalse(track["goal_acceptance"]["passed"])
         self.assertIn("STALE PLANNING", track["next"]["stale_note"])
         self.assertIsNone(track["model"])
+
+
+class ReconciledRecoveryTest(unittest.TestCase):
+    """Recovered usage accounting: a hash-bound saved reconciliation of a
+    controller-stopped native failure replaces the stale native checkpoint
+    exactly once; any unattested or violating record falls back (never a
+    settled zero), and refresh stays read-only."""
+
+    AS_OF = "2026-01-01T12:00:00+00:00"
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name) / "state"
+        shutil.copytree(NO_METRICS, self.root)
+        self.cycle = self.root / "delta/cycles/000001"
+        self.original = json.loads((self.cycle / "result.json").read_text(encoding="utf-8"))
+        self.original.update(
+            attempt="synthetic-attempt",
+            child="synthetic-session",
+            parent="synthetic-parent",
+            base="b" * 40,
+            worktree="/captured/synthetic-worker",
+            phase="native",
+            failure_kind="transient",
+            cleanup_confirmed=True,
+            fence_error="Synthetic lost process",
+            usage={"cost": None, "tokens": None, "model": None},
+        )
+        self.write("result.json", self.original)
+        # The stale pre-crash checkpoint the recovered attestation must replace.
+        self.write(
+            "native-session.json",
+            {
+                "id": "synthetic-session",
+                "cost": 0,
+                "tokens": {"input": 3, "output": 2, "reasoning": 0,
+                           "cache": {"read": 1, "write": 0}},
+            },
+        )
+        row = {
+            "source": "session",
+            "id": "synthetic-session",
+            "cost": 0,
+            "model": {"providerID": "opencode", "id": "synthetic-free"},
+            "tokens": {"input": 180, "output": 79, "reasoning": 13,
+                       "cache": {"read": 410, "write": 0}},
+        }
+        self.session_row = row
+        self.rec = {
+            **copy.deepcopy(self.original),
+            "prior_fence_error": self.original["fence_error"],
+            "fence_error": None,
+            "execution_stop": "confirmed",
+            "recovery": {
+                "attempt_id": "synthetic-attempt",
+                "session_id": "synthetic-session",
+                "stop_id": "synthetic-stop",
+                "execution_stop": {"status": "confirmed"},
+                "accounting": {
+                    "status": "settled_zero",
+                    "observations": [row, {**row, "source": "message:1"}],
+                },
+            },
+            "reconciliation": {
+                "original_result": "/captured/delta/cycles/000001/result.json",
+                "original_result_sha256": hashlib.sha256(
+                    (self.cycle / "result.json").read_bytes()
+                ).hexdigest(),
+                "controller_sha256": "a" * 64,
+                "method": "Synthetic saved attestation; no live controller claim",
+            },
+        }
+
+    def write(self, name, value):
+        (self.cycle / name).write_text(
+            json.dumps(value, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+    def render(self):
+        before = {
+            str(p.relative_to(self.root)): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in self.root.rglob("*")
+            if p.is_file()
+        }
+        dash = server.refresh(self.root, as_of=self.AS_OF)
+        after = {
+            str(p.relative_to(self.root)): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in self.root.rglob("*")
+            if p.is_file()
+        }
+        self.assertEqual(before, after, "Dashboard refresh must remain read-only")
+        return dash["projects"][0]["tokens"]
+
+    def save_rec(self):
+        self.write("reconciled-result.json", self.rec)
+
+    def rejects(self):
+        """Any refused attestation must fall back, visibly unsettled."""
+        self.save_rec()
+        tokens = self.render()
+        self.assertEqual(tokens["accounting"]["counts"]["settled"], 0)
+        self.assertNotEqual(tokens["totals"]["input"], 180)
+        self.assertIn(tokens["accounting"]["state"], ("partial", "unknown"))
+        self.assertEqual(tokens["totals"]["input"], 3)  # stale checkpoint, not zero
+
+    def test_hash_bound_session_totals_replace_stale_checkpoint_once(self):
+        self.save_rec()
+        tokens = self.render()
+        totals = tokens["totals"]
+        self.assertEqual(
+            (totals["input"], totals["output"], totals["reasoning"],
+             totals["cache_read"], totals["cache_write"], totals["total"]),
+            (180, 79, 13, 410, 0, 669),
+        )
+        self.assertEqual(tokens["cost"]["reported"], 0.0)
+        self.assertEqual(tokens["accounting"]["state"], "settled")
+        self.assertEqual(tokens["accounting"]["counts"]["settled"], 1)
+        self.assertTrue(
+            any("saved" in note and "not a live controller" in note
+                for note in tokens["notes"]),
+            tokens["notes"],
+        )
+
+    def test_sibling_relative_provenance_is_accepted(self):
+        self.rec["reconciliation"]["original_result"] = "result.json"
+        self.save_rec()
+        self.assertEqual(self.render()["totals"]["input"], 180)
+
+    def test_changed_original_bytes_refuse_reconciliation(self):
+        self.rec["reconciliation"]["original_result_sha256"] = "f" * 64
+        self.rejects()
+
+    def test_foreign_attempt_session_or_stop_refused(self):
+        base = copy.deepcopy(self.rec)
+        for key, value in (("attempt_id", "foreign"), ("session_id", "foreign"),
+                           ("stop_id", None)):
+            self.rec = copy.deepcopy(base)
+            self.rec["recovery"][key] = value
+            self.rejects()
+
+    def test_reconciled_cycle_identity_changes_refused(self):
+        base = copy.deepcopy(self.rec)
+        for key, value in (("goal_id", "foreign"), ("job_id", "foreign"),
+                           ("sequence", 2), ("status", "accepted"),
+                           ("attempt", "foreign"), ("child", "foreign"),
+                           ("worktree", "/foreign"), ("base", "c" * 40)):
+            self.rec = copy.deepcopy(base)
+            self.rec[key] = value
+            self.rejects()
+
+    def test_unknown_or_violating_accounting_never_settled(self):
+        for status in ("unknown", "unobserved", "violating"):
+            self.rec["recovery"]["accounting"]["status"] = status
+            self.rejects()
+
+    def test_missing_or_duplicate_session_rows_refused(self):
+        row = self.rec["recovery"]["accounting"]["observations"][0]
+        for rows in ([], [{**row, "source": "message:1"}], [row, row],
+                     [{**row, "id": "foreign"}]):
+            self.rec["recovery"]["accounting"]["observations"] = rows
+            self.rejects()
+
+    def test_unknown_token_field_or_nonzero_cost_refused(self):
+        base = copy.deepcopy(self.rec)
+        for value in (None, True, -1, "0"):
+            self.rec = copy.deepcopy(base)
+            self.rec["recovery"]["accounting"]["observations"][0]["tokens"]["cache"]["write"] = value
+            self.rejects()
+        self.rec = copy.deepcopy(base)
+        self.rec["recovery"]["accounting"]["observations"][0]["cost"] = 1
+        self.rejects()
+
+    def test_provenance_cannot_redirect_reads(self):
+        base = copy.deepcopy(self.rec)
+        for reference in ("../../host-private.json",
+                          "/captured/other/cycles/000001/result.json",
+                          "native-session.json",
+                          "/captured/delta/cycles/000002/result.json"):
+            self.rec = copy.deepcopy(base)
+            self.rec["reconciliation"]["original_result"] = reference
+            self.rejects()
+
+    def test_unconfirmed_stop_or_cleanup_refused(self):
+        self.rec["recovery"]["execution_stop"]["status"] = "unconfirmed"
+        self.rejects()
+        self.rec["recovery"]["execution_stop"]["status"] = "confirmed"
+        self.rec["cleanup_confirmed"] = False
+        self.rejects()
 
 
 if __name__ == "__main__":
