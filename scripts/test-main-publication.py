@@ -56,18 +56,48 @@ class Tests(unittest.TestCase):
   self.git('checkout','-q','--detach',self.base);(self.repo/'different').write_text('other');self.git('add','.');self.git('commit','-qm','other');self.remote.head=self.git('rev-parse','HEAD')
   with self.assertRaises(subprocess.CalledProcessError):self.publish()
   self.assertEqual(self.remote.pushes,[])
- def test_required_missing_pending_failed_ci_blocks_publication(self):
+ def test_missing_or_pending_required_ci_waits_failed_or_skipped_stays_fenced(self):
   self.b['required_checks']=['controller']
-  for checks in [[],[{'name':'controller','status':'pending','conclusion':None}],[{'name':'controller','status':'completed','conclusion':'failure'}],[{'name':'controller','status':'completed','conclusion':'skipped'}]]:
+  # Missing and unfinished required checks are an expected wait, never a fence.
+  for checks in [[],[{'name':'controller','status':'pending','conclusion':None}],[{'name':'controller','status':'in_progress','conclusion':None}]]:
    self.remote.checks=checks
-   with self.assertRaises(ValueError):self.publish()
+   result=self.publish();self.assertEqual(result['state'],'awaiting_ci');self.assertEqual(result['ci']['status'],'pending')
+  # Completed failed/skipped/neutral required checks and any non-required failure stay fenced.
+  for checks in [[{'name':'controller','status':'completed','conclusion':'failure'}],[{'name':'controller','status':'completed','conclusion':'skipped'}],[{'name':'controller','status':'completed','conclusion':'neutral'}],[{'name':'other','status':'completed','conclusion':'failure'}]]:
+   self.remote.checks=checks
+   with self.assertRaisesRegex(ValueError,'CI failed'):self.publish()
   self.assertEqual(self.remote.pushes,[])
-  self.remote.checks=[{'name':'controller','status':'completed','conclusion':'success'}];self.publish()
- def test_ci_after_push_pending_retains_reconcilable_intent(self):
+  self.remote.checks=[{'name':'controller','status':'completed','conclusion':'success'}];self.assertEqual(self.publish()['state'],'confirmed')
+  self.assertEqual(self.remote.pushes,[self.commit])
+ def test_ci_after_push_pending_returns_awaiting_and_reconciles_once(self):
   original=self.remote.push
   def push(*args):original(*args);self.remote.checks=[{'name':'ci','status':'pending','conclusion':None}]
-  with patch.object(self.remote,'push',side_effect=push),self.assertRaises(ValueError):self.publish()
-  self.assertEqual(M.read(self.p.root/'state.json')['intent']['state'],'remote_observed');self.remote.checks=[{'name':'ci','status':'completed','conclusion':'success'}];self.publish();self.assertEqual(len(self.remote.pushes),1)
+  with patch.object(self.remote,'push',side_effect=push):
+   first=self.publish()
+  self.assertEqual(first['state'],'awaiting_ci');self.assertEqual(len(self.remote.pushes),1)
+  self.assertEqual(M.read(self.p.root/'state.json')['intent']['state'],'remote_observed')
+  # A restarted publisher resumes the same durable intent without a second push.
+  self.p=M.Publisher(self.root/'state',self.remote)
+  self.remote.checks=[{'name':'ci','status':'completed','conclusion':'success'}]
+  with patch.object(self.p,'verified',return_value=(self.repo,self.commit,self.receipt)):
+   self.assertEqual(self.p.publish(self.b,{'id':'goal'})['state'],'confirmed')
+  self.assertEqual(len(self.remote.pushes),1);self.assertEqual(len(M.read(self.p.root/'state.json')['history']),1)
+ def test_confirmed_publication_replay_waits_for_ci_without_repush_or_second_history(self):
+  self.assertEqual(self.publish()['state'],'confirmed')
+  self.remote.checks=[{'name':'ci','status':'pending','conclusion':None}]
+  self.assertEqual(self.publish()['state'],'awaiting_ci')
+  self.assertEqual(len(self.remote.pushes),1);self.assertEqual(len(M.read(self.p.root/'state.json')['history']),1)
+  self.remote.checks=[{'name':'ci','status':'completed','conclusion':'success'}]
+  self.assertEqual(self.publish()['state'],'confirmed')
+  self.assertEqual(len(self.remote.pushes),1);self.assertEqual(len(M.read(self.p.root/'state.json')['history']),1)
+ def test_lost_response_reconciles_then_waits_for_pending_ci(self):
+  self.remote.fail='after'
+  with self.assertRaises(RuntimeError):self.publish()
+  self.remote.fail=None;self.remote.checks=[{'name':'ci','status':'pending','conclusion':None}]
+  self.assertEqual(self.publish()['state'],'awaiting_ci');self.assertEqual(len(self.remote.pushes),1)
+  self.remote.checks=[{'name':'ci','status':'completed','conclusion':'success'}]
+  self.assertEqual(self.publish()['state'],'confirmed');self.assertEqual(len(self.remote.pushes),1)
+  self.assertEqual(len(M.read(self.p.root/'state.json')['history']),1)
  def test_immutable_binding_and_changed_published_head_refused(self):
   self.publish()
   with self.assertRaises(ValueError):self.p.publish({**self.b,'goal_id':'other'},{'id':'other'})

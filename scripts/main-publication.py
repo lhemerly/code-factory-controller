@@ -21,16 +21,19 @@ def identity(b,s):
   if not re.fullmatch(r'factory/[A-Za-z0-9_-]{1,80}',b['preflight_branch_prefix']):raise ValueError('Preflight branch must stay in the approved factory namespace')
   if not isinstance(b.get('required_checks'),list) or not b['required_checks'] or not all(isinstance(x,str) and x for x in b['required_checks']):raise ValueError('Preflight requires explicit CI check names')
 
-def checked_ci(b,s):
- # Exact-head GitHub API observations; missing required checks are never passes.
- checks=s['checks'];required=b['required_checks']
+def ci_state(b,checks):
+ # Exact-head GitHub API observations. Classify the observed inventory once so
+ # every consumer agrees: unfinished or missing required checks are an expected
+ # wait; failed/skipped required checks are a fence; no checks and no required
+ # policy is not_configured, never an invented pass.
+ required=b.get('required_checks')
  if not isinstance(required,list) or not all(isinstance(x,str) and x for x in required):raise ValueError('Explicit required_checks policy missing')
  if len(checks)>100:raise ValueError('CI inventory exceeds bound')
- if any(c.get('status')!='completed' or c.get('conclusion') not in ['success','neutral','skipped'] for c in checks):raise ValueError('Remote CI pending or failed')
- for name in required:
-  matches=[c for c in checks if c['name']==name]
-  if not matches or any(c.get('conclusion')!='success' for c in matches):raise ValueError('Required exact-head CI not passed: '+name)
- return {'status':'passed' if checks else 'not_configured','checks':checks}
+ failed=any(c.get('status')=='completed' and c.get('conclusion') not in ['success','neutral','skipped'] for c in checks)
+ failed=failed or any(c.get('name') in required and c.get('status')=='completed' and c.get('conclusion')!='success' for c in checks)
+ pending=any(c.get('status')!='completed' for c in checks) or any(not any(c['name']==name and c.get('conclusion')=='success' for c in checks) for name in required)
+ state='failed' if failed else 'pending' if pending else 'passed' if checks else 'not_configured'
+ return state,{'status':state,'checks':checks}
 
 class GitHub:
  def api(self,path):return json.loads(run(['gh','api','--hostname','github.com',path]).stdout)
@@ -63,6 +66,10 @@ class Publisher:
  def locked(self):
   with (self.root/'owner.lock').open('a') as f:fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB);yield
  def save(self,s):self.D.save(self.root/'state.json',s)
+ def await_ci(self,commit,receipt,ci):
+  # An expected post-main CI wait is not a failure: retain durable intent and let
+  # the existing dispatcher retry this same publication later.
+  return {'state':'awaiting_ci','commit':commit,'receipt':receipt,'ci':ci}
  def verified(self,b,goal):
   if goal['id']!=b['goal_id'] or str(pathlib.Path(goal['root']).resolve())!=b['goal_root']:raise ValueError('Exact approved goal binding required')
   root=pathlib.Path(b['goal_root']);status=read(root/'status.json')
@@ -122,13 +129,9 @@ class Publisher:
    self.D.save(path,record)
   candidate=self.remote.snapshot(b,commit);identity(b,candidate)
   if candidate.get('checked_commit')!=commit:raise ValueError('Preflight CI belongs to another commit')
-  checks=candidate['checks']
-  if len(checks)>100:raise ValueError('CI inventory exceeds bound')
-  failed=[c for c in checks if c.get('status')=='completed' and c.get('conclusion') not in ['success','neutral','skipped']]
-  failed += [c for c in checks if c.get('name') in b['required_checks'] and c.get('status')=='completed' and c.get('conclusion')!='success']
-  if failed:record['state']='ci_failed';self.D.save(path,record);raise ValueError('Preflight CI failed')
-  pending=any(c.get('status')!='completed' for c in checks) or any(not any(c['name']==name and c.get('conclusion')=='success' for c in checks) for name in b['required_checks'])
-  record.update(state='awaiting_ci' if pending else 'ready',ci={'commit':commit,'checks':checks});self.D.save(path,record)
+  state,_=ci_state(b,candidate['checks'])
+  if state=='failed':record['state']='ci_failed';self.D.save(path,record);raise ValueError('Preflight CI failed')
+  record.update(state='awaiting_ci' if state=='pending' else 'ready',ci={'commit':commit,'checks':candidate['checks']});self.D.save(path,record)
   return record
  def publish(self,b,goal):
   repo,commit,receipt=self.verified(b,goal)
@@ -164,10 +167,16 @@ class Publisher:
   else:
    if intent and intent['commit']==commit:
     if observed['head']!=commit:raise ValueError('Published main changed; reconcile before new effects')
-    ci=checked_ci(b,observed);return {**intent,'ci':ci}
+    state,ci=ci_state(b,observed['checks'])
+    if state=='failed':raise ValueError('Remote CI failed')
+    if state=='pending':return self.await_ci(commit,receipt,ci)
+    return {**intent,'ci':ci}
    previous=observed['head']
    git(repo,'merge-base','--is-ancestor',previous,commit)
-  diff=self.content(b,repo,previous,commit);ci=checked_ci(b,observed)
+  diff=self.content(b,repo,previous,commit)
+  state,ci=ci_state(b,observed['checks'])
+  if state=='failed':raise ValueError('Remote CI failed')
+  if state=='pending':return self.await_ci(commit,receipt,ci)
   if observed['head']!=commit:
    intent={'state':'push_intent','commit':commit,'previous_head':previous,'receipt':receipt,'diff_sha256':diff,'ci_before':ci};s={'binding':b,'history':(old or {}).get('history',[]),'intent':intent};self.save(s)
    try:self.remote.push(b,repo,commit)
@@ -178,7 +187,10 @@ class Publisher:
   after=self.remote.snapshot(b,commit);identity(b,after)
   if after['head']!=commit or after.get('checked_commit')!=commit:raise ValueError('Main update not observed; intent retained')
   intent.update(state='remote_observed',ci_observation={'commit':commit,'checks':after['checks']});s['intent']=intent;self.save(s)
-  ci=checked_ci(b,after);intent.update(state='confirmed',ci=ci);s['history'].append(dict(intent));self.save(s);return intent
+  state,ci=ci_state(b,after['checks'])
+  if state=='failed':raise ValueError('Remote CI failed')
+  if state=='pending':return self.await_ci(commit,receipt,ci)
+  intent.update(state='confirmed',ci=ci);s['history'].append(dict(intent));self.save(s);return intent
 
 def main():
  p=argparse.ArgumentParser();p.add_argument('--state',required=True);p.add_argument('--binding',required=True);p.add_argument('--goal',required=True);a=p.parse_args();publisher=Publisher(a.state)
