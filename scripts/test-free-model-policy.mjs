@@ -12,6 +12,18 @@ test('injected denial persists, routes next exact free ID and never probes denia
  assert.equal(classify('Factory model has nonzero or unknown pricing'),'unavailable');
  assert.equal(classify('getaddrinfo ETIMEOUT opencode.ai'),'transient');
 });
+test('sticky access denial or ownership block survives a later transient update',()=>{
+ const models=freeModels([m('big-pickle'),m('b-free')]);const id=models[0].id;
+ const denied=failure({},id,'denied',1000);
+ assert.equal(denied[id].kind,'denied');assert.equal(denied[id].until,Number.MAX_SAFE_INTEGER);
+ const afterDenied=failure(denied,id,'transient',2000);
+ assert.equal(afterDenied[id].kind,'denied','A transient update must never clear a denial');
+ assert.equal(afterDenied[id].until,Number.MAX_SAFE_INTEGER);
+ // Still skipped long after the transient window would have expired, then routes to the next free ID.
+ assert.equal(route(models,afterDenied,10**15),models[1].id);
+ const blocked=failure({},id,'blocked',1000);
+ assert.equal(failure(blocked,id,'transient',9000)[id].kind,'blocked','An ownership block must never be cleared');
+});
 test('transient exponential backoff and all-free-unavailable pause without paid fallback',()=>{
  const models=freeModels([m('big-pickle')]);let c=failure({},models[0].id,'transient',0);assert.equal(route(models,c,1),undefined);
  assert.equal(route(models,c,60000),models[0].id);c=failure(c,models[0].id,'transient',60000);assert.equal(c[models[0].id].until,180000);
