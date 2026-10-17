@@ -368,4 +368,7 @@ class RecoveredAccounting(unittest.TestCase):
 _pre_spec=importlib.util.spec_from_file_location('admission_regressions',ROOT/'test-pre-admission-recovery.py');_pre=importlib.util.module_from_spec(_pre_spec);_pre_spec.loader.exec_module(_pre)
 PreAdmissionRegression=_pre.PreAdmissionRegression
 
+_permission_spec=importlib.util.spec_from_file_location('permission_regressions',ROOT/'test-permission-block-resolution.py');_permission=importlib.util.module_from_spec(_permission_spec);_permission_spec.loader.exec_module(_permission)
+PermissionResolutionRegression=_permission.PermissionResolutionRegression
+
 if __name__=='__main__':unittest.main(verbosity=2)

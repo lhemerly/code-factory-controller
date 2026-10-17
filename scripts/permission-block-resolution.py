@@ -1,0 +1,80 @@
+"""Read-only audit of an owner-pinned contract-only permission-block resolution.
+Creating/pinning the record requires independently verified human authorization.
+This command neither grants access, retries the old job, nor changes accounting.
+"""
+import argparse,hashlib,json,os,pathlib,stat,subprocess
+NAME='contract-only-resolution.json'
+def digest(x):return hashlib.sha256(json.dumps(x,sort_keys=True).encode()).hexdigest()
+def sha(p):return hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+def read(p):return json.loads(pathlib.Path(p).read_text())
+def require(ok,why):
+ if not ok:raise ValueError(why)
+def regular(p):
+ p=pathlib.Path(p);s=p.lstat();require(stat.S_ISREG(s.st_mode) and s.st_uid==os.getuid() and not s.st_mode&0o022,'Untrusted owner file: '+str(p));return p
+
+def owner_lock(path):
+ # Linux flock ownership must belong to this audited owner's process ancestry,
+ # not merely to some unrelated process holding a busy lock.
+ path=pathlib.Path(path);s=path.stat();key=f'{os.major(s.st_dev):02x}:{os.minor(s.st_dev):02x}:{s.st_ino}';ancestors={os.getpid()};pid=os.getpid()
+ for _ in range(64):
+  try:parent=int(pathlib.Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[1])
+  except (FileNotFoundError,ValueError):break
+  if parent<=1 or parent in ancestors:break
+  ancestors.add(parent);pid=parent
+ for line in pathlib.Path('/proc/locks').read_text().splitlines():
+  parts=line.split()
+  if len(parts)>5 and parts[1]=='FLOCK' and parts[3]=='WRITE' and parts[5]==key and int(parts[4]) in ancestors:return
+ raise ValueError('Exclusive owner lock unavailable: '+str(path))
+
+def audit(root,directory,controller,next_sequence):
+ root=pathlib.Path(root).resolve();directory=pathlib.Path(directory).resolve();proof=regular(root/NAME);v=read(proof)
+ require(v.get('version')==1 and v.get('kind')=='contract-only-checker-reference','Unsupported resolution')
+ require(directory.parent==root/'cycles' and directory.name.isdigit(),'Foreign cycle')
+ original=regular(directory/'result.json');out=read(original);sequence=int(directory.name)
+ require(v['original_sha256']==sha(original) and v['sequence']==sequence==out['sequence'] and next_sequence==sequence+1,'Stale failure or next sequence')
+ require(out['status']=='failed' and out.get('failure_kind')=='blocked' and out.get('phase')=='native' and out.get('cleanup_confirmed') is True and not out.get('fence_error'),'Not a confirmed failed native block')
+ require(not out.get('candidate') and not out.get('acceptance'),'Resolution cannot approve candidate work')
+ identity={k:out.get(k) for k in ['goal_id','job_id','attempt','child','parent','worktree']};require(v['identity']==identity and all(isinstance(x,str) and x for x in identity.values()),'Execution identity mismatch')
+ cfg=read(root/'supervisor.json');goal=read(root/'goal.json');require(goal['id']==out['goal_id'] and pathlib.Path(cfg['controller']).resolve()==pathlib.Path(controller).resolve() and cfg['controller_sha256']==sha(controller),'Goal/controller mismatch')
+ require(v['configuration_sha256']==sha(root/'supervisor.json'),'Configuration changed')
+ denied=str(root.parent/'code-factory-recovery-owner/scripts/queue-fixture-policy.py');history=regular(directory/'native-context-final.json');require(v['denial_history_sha256']==sha(history),'Denial history changed')
+ rejected=[]
+ for message in read(history):
+  for content in message.get('content',[]):
+   state=content.get('state',{});error=state.get('error',{})
+   if isinstance(error,dict) and error.get('type')=='permission.rejected':rejected.append(content)
+ require(len(rejected)==1,'Additional or absent denial');call=rejected[0]
+ require(call.get('name')=='read' and call.get('executed') is False and call['state'].get('input')=={'path':denied} and call['state']['error'].get('message')=='Permission denied: external_directory','Different denied action')
+ manifest_path=regular(v['manifest']);manifest=read(manifest_path);state=read(regular(manifest['state']));require(state['manifest_digest']==digest(manifest),'Owner manifest not reconciled');owner_lock(manifest['pool_lock']);owner_lock(root/'supervisor.lock')
+ current=state.get('current')
+ require(not current or current.get('goal')==out['goal_id'] and current.get('expected_sequence')==next_sequence,'Another active goal or sequence')
+ require(any(g['id']==out['goal_id'] and pathlib.Path(g['root']).resolve()==root for g in manifest['goals']),'Manifest goal mismatch')
+ pins=manifest['trusted_files'];require(pins.get(str(proof))==sha(proof),'Resolution is not owner-pinned')
+ without=json.loads(json.dumps(manifest));without['trusted_files'].pop(str(proof));require(v['manifest_without_resolution_sha256']==digest(without),'Owner manifest changed')
+ def pinned(p):
+  p=regular(p);require(pins.get(str(p))==sha(p),'Unpinned resolution input: '+str(p));return read(p)
+ require(pins.get(str(pathlib.Path(__file__).resolve()))==sha(__file__),'Unpinned resolver implementation')
+ authorization=pinned(v['authorization']);require(authorization.get('decision')=='approve' and authorization.get('source')=='verified-human-conversation' and all(isinstance(authorization.get(k),str) and authorization[k].strip() for k in ['thread_id','message_id','reply']),'Explicit human authorization missing')
+ expected={'goal_id':out['goal_id'],'original_sha256':sha(original),'denial_history_sha256':sha(history),'packaging_sha256':v['packaging_sha256'],'next_sequence':next_sequence,'denied_file_remains_inaccessible':True,'missing_usage_remains_unknown':True,'same_goal_only':True}
+ require(authorization.get('scope')==expected,'Authorization scope mismatch')
+ packaging=pinned(v['packaging']);require(sha(v['packaging'])==v['packaging_sha256'] and packaging['applied'] is True and packaging['host_checker_bytes_unchanged'] is True and packaging['host_acceptance_wrapper_only_changes_checker_location'] is True and packaging['manifest_goals_acceptance_models_publication_and_permissions_unchanged'] is True and packaging['denied_helper_exposed_to_worker'] is False,'Packaging proof mismatch')
+ data=root/'trusted/queue-publication-fixture';host=root/'trusted/queue-publication-host/check.py';contract=data/'VERIFIER-CONTRACT.md'
+ require(pathlib.Path(cfg['data']).resolve()==data and sorted(p.name for p in data.iterdir())==['VERIFIER-CONTRACT.md'] and not data.is_symlink(),'Worker inputs are not contract-only')
+ for p,h in [(host,packaging['host_checker_sha256']),(contract,packaging['contract_sha256'])]:require(sha(regular(p))==h and pins.get(str(p))==h,'Frozen checker/contract changed')
+ for p in [root/'task.txt',root/'trusted/verify.py',root/'supervisor.json']:require(pins.get(str(p))==sha(regular(p)),'Unpinned runtime input')
+ require('Read data/check.py' not in (root/'task.txt').read_text() and 'data/VERIFIER-CONTRACT.md' in (root/'task.txt').read_text(),'Stale worker instruction')
+ checks=pinned(v['verification']);require(checks['passed'] is True and all(checks['checks']['kernel'].values()) and checks['checks']['same_goal_admission_gate']['blocked'] is True,'Packaging verification missing')
+ execution=pinned(v['owned_receipt']);plan=pinned(v['owned_plan']);require(execution['execution_id']==plan['execution_id'] and str(manifest_path) in plan['argv'] and execution['quiescent'] is True and execution['leaked_descendants'] is False and type(execution['root_exit_status']) is int,'Owned execution cleanup missing')
+ observed=json.loads(subprocess.check_output([str(controller),'inspect','--config',str(directory/'controller.json'),'--job',out['job_id']],text=True,timeout=40));live=observed.get('execution_recovery') or {};require(observed.get('state')=='blocked' and live.get('stop_id')==v['stop_id'] and live.get('attempt_id')==out['attempt'] and live.get('session_id')==out['child'] and live.get('execution_stop',{}).get('status')=='confirmed','Authoritative stop changed')
+ require(live.get('accounting',{}).get('status') in ['unknown','settled_zero'],'Unknown verdict or accounting violation')
+ # The native context-preflight record for this exact next sequence may already
+ # exist, but no admitted or later execution can reuse this resolution.
+ for p in (root/'cycles').iterdir():
+  if p.name.isdigit() and int(p.name)>=next_sequence:
+   require(int(p.name)==next_sequence and not any((p/n).exists() for n in ['controller.json','operator-admit.json','operator-prepare.json','native-session.json']),'Resolution already consumed or superseded')
+ require(not (root/'PAUSE').exists(),'Explicit user pause remains authoritative')
+ return {'kind':v['kind'],'proof_sha256':sha(proof),'authorization_sha256':sha(v['authorization']),'original_sha256':sha(original),'denial_history_sha256':sha(history),'packaging_sha256':v['packaging_sha256'],'goal_id':out['goal_id'],'authorized_next_sequence':next_sequence,'prior_outcome':'failed','prior_denial_preserved':True,'accounting':live['accounting']['status'],'usage':out.get('usage'),'access_grants':[],'acceptance_granted':False}
+
+def main():
+ p=argparse.ArgumentParser();p.add_argument('--root',required=True);p.add_argument('--directory',required=True);p.add_argument('--controller',required=True);p.add_argument('--next-sequence',required=True,type=int);a=p.parse_args();print(json.dumps(audit(a.root,a.directory,a.controller,a.next_sequence)))
+if __name__=='__main__':main()

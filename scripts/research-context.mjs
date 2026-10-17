@@ -165,13 +165,21 @@ export async function buildResearchContext({root,repo,state,goal,cfg,beforeSeque
  }
  const latestExecution=completed.find(c=>!c.record._not_admitted);
  const latest=latestExecution?.record;
- if(latest&&latest.failure_kind==='blocked')throw Error('Prior native permission/ownership blocker remains unresolved');
+ let permissionResolution;
+ if(latest&&latest.failure_kind==='blocked'){
+  const unresolved='Prior native permission/ownership blocker remains unresolved';
+  try{await readFile(resolve(root,'contract-only-resolution.json'))}catch(error){if(error.code==='ENOENT')throw Error(unresolved);throw error}
+  if(!Number.isSafeInteger(beforeSequence))throw Error(unresolved+': explicit next sequence required');
+  try{permissionResolution=JSON.parse(execFileSync('/usr/bin/python3',[fileURLToPath(new URL('./permission-block-resolution.py',import.meta.url)),'--root',root,'--directory',latestExecution.dir,'--controller',cfg.controller,'--next-sequence',String(beforeSequence)],{encoding:'utf8',timeout:45000,stdio:['ignore','pipe','pipe']}))}catch{throw Error(unresolved+': owner-pinned resolution audit failed')}
+ }
+
  if(latest&&latest.status!=='all_free_unavailable'&&!(latest.status==='accepted'?recoveryAction(latest)==='continue':replacementAllowed(latest)))throw Error('Latest cycle lacks confirmed ownership/cleanup for admission');
  const latestAccepted=completed.find(c=>c.record.status==='accepted');
  const selected=completed.slice(0,3);
  if(latestExecution&&!selected.includes(latestExecution))selected.push(latestExecution);
  if(latestAccepted&&!selected.includes(latestAccepted))selected.push(latestAccepted);
- const outcomes=[];const sources=[];let acceptedCommit=null,diagnosticIncluded=false;
+ const outcomes=[];const sources=[];
+ if(permissionResolution)sources.push({permission_resolution:permissionResolution});let acceptedCommit=null,diagnosticIncluded=false;
  for(const {dir,record,result_sha256} of selected){
   if(record._not_admitted){
    outcomes.push({sequence:record.sequence,state:'failed_before_admission',execution:'not_admitted',worker_session_created:false,reason:record.error,accounting:'unreported'});

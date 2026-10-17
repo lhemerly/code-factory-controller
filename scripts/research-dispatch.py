@@ -463,6 +463,13 @@ def owner_resume(manifest):
    elif result.get('status') not in ('accepted','all_free_unavailable'):
     recovery=result.get('recovery') or {}
     if result.get('fence_error') or recovery.get('execution_stop',{}).get('status')!='confirmed' or recovery.get('accounting',{}).get('status')=='violating':raise RuntimeError('Cannot resume unconfirmed stop or known policy violation')
+  if s.get('last_cycle') and result.get('failure_kind')=='blocked':
+   # Audit before changing pause/state; the old job and denial stay blocked.
+   resolution_locks=Locks()
+   try:
+    resolution_locks.acquire(root/'supervisor.lock')
+    module('permission_resolution','permission-block-resolution.py').audit(root,pathlib.Path(s['last_cycle']['result']).parent,manifest['controller'],s['sequence']+1)
+   finally:resolution_locks.close()
   if s.get('status')=='paused' or (root/'PAUSE').exists():
    subprocess.run([sys.executable,str(ROOT/'spark-control.py'),'resume','--root',str(root),'--reason','Owner explicitly launched the shared two-goal foreground dispatcher; inspect prior owned-stop evidence and continue preserved checkpoints'],check=True)
 
