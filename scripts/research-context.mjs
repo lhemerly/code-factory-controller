@@ -168,9 +168,12 @@ export async function buildResearchContext({root,repo,state,goal,cfg,beforeSeque
  let permissionResolution;
  if(latest&&latest.failure_kind==='blocked'){
   const unresolved='Prior native permission/ownership blocker remains unresolved';
-  try{await readFile(resolve(root,'contract-only-resolution.json'))}catch(error){if(error.code==='ENOENT')throw Error(unresolved);throw error}
+  const interrupted=latest.error==='Error: Operator stopping';
+  const proof=interrupted?'owner-interruption.json':'contract-only-resolution.json';
+  const resolver=interrupted?'owner-interruption.py':'permission-block-resolution.py';
+  try{await readFile(resolve(root,proof))}catch(error){if(error.code==='ENOENT')throw Error(unresolved);throw error}
   if(!Number.isSafeInteger(beforeSequence))throw Error(unresolved+': explicit next sequence required');
-  try{permissionResolution=JSON.parse(execFileSync('/usr/bin/python3',[fileURLToPath(new URL('./permission-block-resolution.py',import.meta.url)),'--root',root,'--directory',latestExecution.dir,'--controller',cfg.controller,'--next-sequence',String(beforeSequence)],{encoding:'utf8',timeout:45000,stdio:['ignore','pipe','pipe']}))}catch{throw Error(unresolved+': owner-pinned resolution audit failed')}
+  try{permissionResolution=JSON.parse(execFileSync('/usr/bin/python3',[fileURLToPath(new URL('./'+resolver,import.meta.url)),'--root',root,'--directory',latestExecution.dir,'--controller',cfg.controller,'--next-sequence',String(beforeSequence)],{encoding:'utf8',timeout:45000,stdio:['ignore','pipe','pipe']}))}catch{throw Error(unresolved+': owner-pinned resolution audit failed')}
  }
 
  if(latest&&latest.status!=='all_free_unavailable'&&!(latest.status==='accepted'?recoveryAction(latest)==='continue':replacementAllowed(latest)))throw Error('Latest cycle lacks confirmed ownership/cleanup for admission');

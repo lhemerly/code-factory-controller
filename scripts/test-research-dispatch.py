@@ -374,4 +374,7 @@ PermissionResolutionRegression=_permission.PermissionResolutionRegression
 _locks_spec=importlib.util.spec_from_file_location('lock_regressions',ROOT/'test-lock-corroboration.py');_locks=importlib.util.module_from_spec(_locks_spec);_locks_spec.loader.exec_module(_locks)
 LockCorroborationRegression=_locks.LockRegression
 
+_interruption_spec=importlib.util.spec_from_file_location('interruption_regressions',ROOT/'test-owner-interruption.py');_interruption=importlib.util.module_from_spec(_interruption_spec);_interruption_spec.loader.exec_module(_interruption)
+OwnerInterruptionRegression=_interruption.OwnerInterruptionRegression
+
 if __name__=='__main__':unittest.main(verbosity=2)

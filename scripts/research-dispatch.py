@@ -468,7 +468,8 @@ def owner_resume(manifest):
    resolution_locks=Locks()
    try:
     resolution_locks.acquire(root/'supervisor.lock')
-    module('permission_resolution','permission-block-resolution.py').audit(root,pathlib.Path(s['last_cycle']['result']).parent,manifest['controller'],s['sequence']+1)
+    resolver='owner-interruption.py' if result.get('error')=='Error: Operator stopping' else 'permission-block-resolution.py'
+    module('blocked_attempt_resolution',resolver).audit(root,pathlib.Path(s['last_cycle']['result']).parent,manifest['controller'],s['sequence']+1)
    finally:resolution_locks.close()
   if s.get('status')=='paused' or (root/'PAUSE').exists():
    subprocess.run([sys.executable,str(ROOT/'spark-control.py'),'resume','--root',str(root),'--reason','Owner explicitly launched the shared two-goal foreground dispatcher; inspect prior owned-stop evidence and continue preserved checkpoints'],check=True)
