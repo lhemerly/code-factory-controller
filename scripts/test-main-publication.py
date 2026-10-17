@@ -2,8 +2,8 @@ import copy,importlib.util,json,pathlib,subprocess,tempfile,unittest
 from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('mainpub',pathlib.Path(__file__).with_name('main-publication.py'));M=importlib.util.module_from_spec(spec);spec.loader.exec_module(M)
 class Remote:
- def __init__(self,b,head):self.b=b;self.head=head;self.pushes=[];self.fail=None;self.checks=[]
- def snapshot(self,b,commit=None):return {'repository':{'id':b['repository_id'],'full_name':b['repository'],'private':True,'default_branch':'main'},'head':self.head,'checked_commit':commit or self.head,'checks':copy.deepcopy(self.checks)}
+ def __init__(self,b,head):self.b=b;self.head=head;self.pushes=[];self.fail=None;self.checks=[];self.main_checks=[]
+ def snapshot(self,b,commit=None):return {'repository':{'id':b['repository_id'],'full_name':b['repository'],'private':True,'default_branch':'main'},'head':self.head,'checked_commit':commit or self.head,'checks':copy.deepcopy(self.checks),'main_checks':copy.deepcopy(self.main_checks)}
  def push(self,b,repo,commit):
   self.pushes.append(commit)
   if self.fail=='before':raise RuntimeError('lost before push')
@@ -111,7 +111,7 @@ class PreflightRemote(Remote):
  def push_preflight(self,b,repo,commit,branch):
   self.preflight_pushes.append((branch,commit))
   if self.preflight_fail=='before':raise RuntimeError('unobserved preflight failure')
-  self.refs[branch]=commit;self.checks=[{'name':'controller','status':'in_progress','conclusion':None}]
+  self.refs[branch]=commit;self.checks=[{'name':'controller','status':'in_progress','conclusion':None}];self.main_checks=[]
   if self.preflight_fail=='after':raise RuntimeError('lost preflight response')
 
 class PreflightTests(unittest.TestCase):
@@ -123,7 +123,7 @@ class PreflightTests(unittest.TestCase):
  def ready(self):self.remote.checks=[{'name':'controller','status':'completed','conclusion':'success'}]
  def test_factory_preflight_waits_for_exact_ci_then_publishes_and_replays_once(self):
   self.assertEqual(self.publish()['state'],'awaiting_ci');self.assertEqual(self.remote.pushes,[]);self.publish();self.assertEqual(len(self.remote.preflight_pushes),1)
-  self.ready();self.assertEqual(self.publish()['state'],'confirmed');self.publish();self.assertEqual(self.remote.pushes,[self.commit]);self.assertEqual(len(self.remote.preflight_pushes),1)
+  self.ready();self.remote.main_checks=[{'name':'controller','status':'completed','conclusion':'success'}];self.assertEqual(self.publish()['state'],'confirmed');self.publish();self.assertEqual(self.remote.pushes,[self.commit]);self.assertEqual(len(self.remote.preflight_pushes),1)
  def test_preflight_lost_response_reconciles_without_second_push(self):
   self.remote.preflight_fail='after'
   with self.assertRaises(RuntimeError):self.publish()
@@ -148,5 +148,25 @@ class PreflightTests(unittest.TestCase):
   self.b['require_goal_completion']=True
   with self.assertRaises(FileNotFoundError):self.publish()
   self.assertEqual(self.remote.preflight_pushes,[])
+ def test_strict_main_ci_delayed_confirms_once_without_repush(self):
+  self.assertEqual(self.publish()['state'],'awaiting_ci')
+  self.ready()
+  self.remote.main_checks=[]
+  self.assertEqual(self.publish()['state'],'awaiting_ci')
+  self.assertEqual(self.remote.pushes,[self.commit])
+  self.remote.main_checks=[{'name':'controller','status':'completed','conclusion':'success'}]
+  self.assertEqual(self.publish()['state'],'confirmed')
+  self.publish()
+  self.assertEqual(len(self.remote.pushes),1)
+  self.assertEqual(len(M.read(self.p.root/'state.json')['history']),1)
+ def test_strict_failed_main_ci_fences_without_second_push(self):
+  self.assertEqual(self.publish()['state'],'awaiting_ci')
+  self.ready()
+  self.remote.main_checks=[]
+  self.assertEqual(self.publish()['state'],'awaiting_ci')
+  self.remote.main_checks=[{'name':'controller','status':'completed','conclusion':'failure'}]
+  with self.assertRaisesRegex(ValueError,'CI failed'):self.publish()
+  self.assertEqual(len(self.remote.pushes),1)
+  self.assertEqual(M.read(self.p.root/'state.json')['history'],[])
 
 if __name__=='__main__':unittest.main()

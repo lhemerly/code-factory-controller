@@ -35,10 +35,10 @@ def ci_state(b,checks):
  state='failed' if failed else 'pending' if pending else 'passed' if checks else 'not_configured'
  return state,{'status':state,'checks':checks}
 
-def checked_ci(b,s):
+def checked_ci(b,s,field='checks'):
  # Strict exact-head gate before any main push. Missing, unfinished or failed
  # required checks must fence the push; only a green inventory may proceed.
- checks=s['checks'];required=b['required_checks']
+ checks=s[field];required=b['required_checks']
  if not isinstance(required,list) or not all(isinstance(x,str) and x for x in required):raise ValueError('Explicit required_checks policy missing')
  if len(checks)>100:raise ValueError('CI inventory exceeds bound')
  if any(c.get('status')!='completed' or c.get('conclusion') not in ['success','neutral','skipped'] for c in checks):raise ValueError('Remote CI pending or failed')
@@ -51,12 +51,27 @@ class GitHub:
  def api(self,path):return json.loads(run(['gh','api','--hostname','github.com',path]).stdout)
  def snapshot(self,b,commit=None):
   r=self.api('repos/'+b['repository']);head=self.api('repos/'+b['repository']+'/git/ref/heads/main')['object']['sha'];target=commit or head
-  c=self.api(f"repos/{b['repository']}/commits/{target}/check-runs?per_page=100&filter=latest")
+  c=self.api(f"repos/{b['repository']}/commits/{target}/check-runs?per_page=100&filter=all")
+  suites_resp=self.api(f"repos/{b['repository']}/commits/{target}/check-suites?per_page=100")
   statuses=self.api(f"repos/{b['repository']}/commits/{target}/status?per_page=100")
-  if c['total_count']>100 or statuses['total_count']>100:raise ValueError('CI inventory incomplete')
+  if c['total_count']>100 or suites_resp['total_count']>100 or statuses['total_count']>100:raise ValueError('CI inventory incomplete')
   checks=[{'name':x['name'],'status':x['status'],'conclusion':x.get('conclusion')} for x in c['check_runs']]
   checks += [{'name':x['context'],'status':'completed' if x['state']!='pending' else 'pending','conclusion':'success' if x['state']=='success' else 'failure'} for x in statuses['statuses']]
-  return {'repository':r,'head':head,'checks':checks,'checked_commit':target}
+  suite_by_id={s.get('id'):s for s in suites_resp.get('check_suites',[])}
+  branch=b.get('branch') or 'main'
+  latest={}
+  for run in c['check_runs']:
+   suite=suite_by_id.get((run.get('check_suite') or {}).get('id'))
+   if not isinstance(suite,dict):continue
+   if suite.get('head_branch')!=branch:continue
+   if suite.get('head_sha')!=target:continue
+   if run.get('head_sha')!=target:continue
+   name=run.get('name')
+   key=(run.get('completed_at') or '',run.get('started_at') or '',run.get('id') or 0)
+   if name not in latest or key>latest[name][0]:
+    latest[name]=(key,run)
+  main_checks=[{'name':run['name'],'status':run['status'],'conclusion':run.get('conclusion')} for _,run in latest.values()]
+  return {'repository':r,'head':head,'checks':checks,'main_checks':main_checks,'checked_commit':target}
  def push(self,b,repo,commit):
   # Ordinary fast-forward ref update: concurrent divergent changes are rejected by Git.
   run(['/usr/bin/git','-c','core.hooksPath=/dev/null','-C',str(repo),'push',b['remote_url'],commit+':refs/heads/main'])
@@ -169,7 +184,8 @@ class Publisher:
   else:
    if intent and intent['commit']==commit:
     if observed['head']!=commit:raise ValueError('Published main changed; reconcile before new effects')
-    state,ci=ci_state(b,observed['checks'])
+    post_checks=observed.get('main_checks',[]) if b.get('preflight_branch_prefix') else observed.get('checks',[])
+    state,ci=ci_state(b,post_checks)
     if state=='failed':raise ValueError('Remote CI failed')
     if state=='pending':return self.await_ci(commit,receipt,ci)
     return {**intent,'ci':ci}
@@ -188,10 +204,11 @@ class Publisher:
    s=old
   after=self.remote.snapshot(b,commit);identity(b,after)
   if after['head']!=commit or after.get('checked_commit')!=commit:raise ValueError('Main update not observed; intent retained')
-  intent.update(state='remote_observed',ci_observation={'commit':commit,'checks':after['checks']});s['intent']=intent;self.save(s)
+  after_checks=after.get('main_checks',[]) if b.get('preflight_branch_prefix') else after.get('checks',[])
+  intent.update(state='remote_observed',ci_observation={'commit':commit,'checks':after_checks});s['intent']=intent;self.save(s)
   # Post-main CI is an expected wait after observing the exact retained intent;
   # failed checks stay fenced and never become acceptance.
-  state,ci=ci_state(b,after['checks'])
+  state,ci=ci_state(b,after_checks)
   if state=='failed':raise ValueError('Remote CI failed')
   if state=='pending':return self.await_ci(commit,receipt,ci)
   intent.update(state='confirmed',ci=ci);s['history'].append(dict(intent));self.save(s);return intent
