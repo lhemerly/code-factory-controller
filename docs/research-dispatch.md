@@ -65,9 +65,23 @@ A passing delivered patch is a milestone. Whole-goal completion additionally cal
 the existing `goal-acceptance.py` implementation in a fresh checkout of the exact
 integrated commit, under a separate host-approved scientific completion contract.
 Checks must return exact-commit structured evidence and receipts. Missing checks
-leave the goal unresolved; worker-authored claims, unit tests and reused weak-label
+pause continuous coding before admission. Invalid commands, timeouts, evidence
+coverage or environment policy also pause admission without launching a worker.
+After a delivered milestone, missing checks and policy/setup/check-launch errors
+pause the goal; genuine failed behavior checks can still guide autonomous repair.
+Explicit bounded `one_cycle` admissions can await owner-defined goal checks and
+stop after their milestone, without claiming whole-goal completion.
+Worker-authored claims, unit tests and reused weak-label
 metric gains cannot complete it. Scientific check definitions cannot safely be
 invented before the required data and acceptance protocol exist.
+
+Whole-goal verdicts require integer `executed > 0` and integer `failed == 0`.
+`skipped:false` or integer `skipped_count:0` explicitly proves no skips; if both
+are supplied, both must agree. Booleans do not count as integers. The specialized
+`vulkan_execution` contract instead requires its existing positive GPU-dispatch
+count, validated device identity and validation verdict; test counts remain
+optional there and must be valid when supplied. Historical test verdicts without
+counts no longer establish completion and require reviewed measured evidence.
 
 Verification:
 
@@ -206,6 +220,19 @@ its already approved controller executable; it does not accept a worker-selected
 executor. Run `python3 scripts/test-goal-process-lifecycle.py` after building the
 controller for local detached-child, owner-loss, timeout, log-limit and unresolved
 execution regressions. These tests do not invoke a model or activate a deployment.
+
+Completed goals, including goals already satisfied at their initial baseline,
+revalidate check coverage, exact commit, structured evidence and log hashes on
+restart. Supervised completion additionally requires the saved version-1 process
+receipt to match the retained executor observation and exact plan: execution ID,
+command/environment, timeout, checkout, log and receipt paths. Missing, changed,
+non-quiescent or unsupported process evidence durably blocks completion as
+`needs_attention`; auditing never reruns checks or sends signals. The same audit
+guards whole-goal-required publication before remote effects. This assumes the
+existing trusted host-private evidence boundary, not cryptographic attestation.
+Standalone legacy receipts without lifecycle fields remain auditable only when
+the caller has not required a verifier executable; legacy missing stderr hashes
+are tolerated on that path. Partial lifecycle records cannot downgrade to it.
 
 Fresh autonomous coding goals can declare `initial_base` as an approved exact Git
 commit. Before starting a coding cycle, the dispatcher evaluates that commit with

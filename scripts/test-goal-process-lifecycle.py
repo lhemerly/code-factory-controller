@@ -55,4 +55,43 @@ class Lifecycle(unittest.TestCase):
   (directory/'0.process.json').write_text(json.dumps({'version':1,'execution_id':'pending','observer':'linux_subreaper_waitpid_pidfd','quiescent':True}))
   r=self.run_code('import json,os;'+self.evidence());self.assertTrue(r['passed'],r)
 
+class CompletedGoalAudit(unittest.TestCase):
+ setUp=Lifecycle.setUp
+ evidence=Lifecycle.evidence
+ def test_fresh_cli_reaudits_baseline_process_proof_without_replaying_checks(self):
+  spec=importlib.util.spec_from_file_location('dispatcher',ROOT/'research-dispatch.py');D=importlib.util.module_from_spec(spec);spec.loader.exec_module(D)
+  counter=self.root/'executions'
+  code="import json,os,pathlib;p=pathlib.Path("+repr(str(counter))+");p.write_text(p.read_text()+'x' if p.exists() else 'x');"+self.evidence()
+  goal={'id':'baseline','initial_base':self.commit,'root':str(self.root/'goal'),'repository':str(self.repo),'cycle_command':['/must-not-launch'],'acceptance':{'required_evidence':['goal_tests'],'completion_checks':[{'id':'goal','evidence_type':'goal_tests','argv':[sys.executable,'-c',code]}]}}
+  goal['acceptance']['verification_environment']={'RUSTUP_HOME':'approved-rustup','CARGO_HOME':'approved-cargo'}
+  manifest={'goals':[goal],'controller':str(BINARY),'worker_slots':1,'pool_lock':str(self.root/'pool.lock'),'state':str(self.root/'dispatch.json'),'trusted_files':{str(BINARY):__import__('hashlib').sha256(BINARY.read_bytes()).hexdigest()}}
+  D.save(self.root/'manifest.json',manifest);d=D.Dispatcher(manifest,self.root/'dispatch.json');d.step()
+  receipt=d.s['goals']['baseline']['goal_acceptance']['receipts'][0]
+  process=pathlib.Path(receipt['process_receipt']);plan=process.with_name('0.plan.json');stdout=pathlib.Path(receipt['stdout']);stderr=pathlib.Path(receipt['stderr'])
+  state=self.root/'dispatch.json';original={p:p.read_bytes() for p in [process,plan,stdout,stderr,state]}
+  argv=[sys.executable,str(ROOT/'research-dispatch.py'),'run','--manifest',str(self.root/'manifest.json')]
+  def reopen():return subprocess.run(argv,capture_output=True,text=True,timeout=10)
+  self.assertEqual(reopen().returncode,0)
+  # Manifest fingerprints ignore dictionary order; reordered equivalent approved
+  # environment entries must still match the existing version-1 process plan.
+  goal['acceptance']['verification_environment']={'CARGO_HOME':'approved-cargo','RUSTUP_HOME':'approved-rustup'}
+  D.save(self.root/'manifest.json',manifest)
+  self.assertEqual(reopen().returncode,0)
+  mutations=[('missing process',lambda:process.unlink()),('missing plan',lambda:plan.unlink()),
+   ('foreign execution',lambda:process.write_text(json.dumps({**json.loads(original[process]),'execution_id':'foreign'}))),
+   ('wrong plan commit',lambda:plan.write_text(json.dumps({**json.loads(original[plan]),'commit':'b'*40}))),
+   ('wrong command',lambda:plan.write_text(json.dumps({**json.loads(original[plan]),'argv':['/usr/bin/true']}))),
+   ('wrong plan path',lambda:plan.write_text(json.dumps({**json.loads(original[plan]),'stdout':str(self.root/'foreign')}))),
+   ('not quiescent',lambda:process.write_text(json.dumps({**json.loads(original[process]),'quiescent':False}))),
+   ('unsupported version',lambda:process.write_text(json.dumps({**json.loads(original[process]),'version':2}))),
+   ('changed stderr',lambda:stderr.write_text('changed')),('missing stdout',lambda:stdout.unlink())]
+  for name,mutate in mutations:
+   with self.subTest(name=name):
+    for p,data in original.items():p.write_bytes(data)
+    mutate();run=reopen();self.assertNotEqual(run.returncode,0,run.stdout+run.stderr)
+    self.assertEqual(json.loads(state.read_text())['status'],'needs_attention')
+    self.assertEqual(counter.read_text(),'x','audit must never replay a verifier')
+  for p,data in original.items():p.write_bytes(data)
+  self.assertEqual(reopen().returncode,0);self.assertEqual(counter.read_text(),'x')
+
 if __name__=='__main__':unittest.main(verbosity=2)

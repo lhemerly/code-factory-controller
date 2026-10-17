@@ -204,6 +204,8 @@ class Dispatcher:
    self.record_evaluation(goal,milestone['commit'],result,milestone['receipt'])
    if result.get('execution_unresolved'):
     gs['state']='paused';gs['reason']='Independent goal verifier ownership/quiescence unconfirmed; preserve process evidence';return
+   if result.get('status')=='awaiting_acceptance' or result.get('phase') in ('policy','setup','check_launch'):
+    gs['state']='paused';gs['reason']='Approved goal verification prerequisites unavailable: '+result.get('reason','inspect retained evaluation');return
    passed=result.get('passed') is True and result.get('status')=='passed' and result.get('commit')==milestone['commit'] and bool(result.get('receipts'))
    publication=self.m.get('main_publication',{}).get(goal['id'])
    if publication:
@@ -244,6 +246,13 @@ class Dispatcher:
    except Exception as error:
     self.s['status']='needs_attention';self.persist();raise
    self.s['current']=None;self.s['cursor']=(index+1)%len(self.m['goals']);self.persist();return True
+  # Explicit one-cycle admissions may await an owner-defined completion contract;
+  # they already stop after their bounded milestone. Continuous goals must have
+  # usable checks before spending any coding work, even without initial_base.
+  if goal.get('admission_mode')!='one_cycle':
+   try:acceptance.validate_policy({**goal.get('acceptance',{}),'repository':goal['repository']})
+   except ValueError as error:
+    self.s['goals'][goal['id']].update(state='paused',reason='Approved goal verification prerequisites unavailable: '+str(error));self.persist();return True
   self.sync_circuits()
   self.s['status']='running';self.s['current']={'goal':goal['id'],'index':index,'expected_sequence':prior['sequence']+1,'phase':'spawning'};self.persist()
   try:
@@ -379,9 +388,15 @@ class Dispatcher:
     if self.audit(g,out)!=milestone:raise RuntimeError('Stored milestone identity changed')
    if gs['state'] not in ['complete','publishing']:continue
    result=gs['goal_acceptance']
-   for receipt in result.get('receipts',[]):
-    path=pathlib.Path(receipt['stdout'])
-    if hashlib.sha256(path.read_bytes()).hexdigest()!=receipt['stdout_sha256']:raise RuntimeError('Goal acceptance evidence changed; completion unconfirmed')
+   if gs['state']=='complete' or result.get('passed') is True:
+    milestone=gs.get('completion_milestone') or (gs.get('milestones') or [{}])[-1]
+    commit=gs.get('completion_base') or milestone.get('commit')
+    try:acceptance.audit_result({**g['acceptance'],'repository':g['repository'],'verifier_executable':self.m['controller']},result,commit)
+    except (ValueError,KeyError,OSError,TypeError) as error:raise RuntimeError('Goal completion evidence changed or ownership unconfirmed: '+str(error)) from error
+   else:
+    # Publication may deliberately require only a verified milestone. Failed
+    # whole-goal checks remain failures; do not apply a success-only audit.
+    for receipt in result.get('receipts',[]):acceptance.audit_logs(receipt)
 
  def recover_and_audit(self):
   try:self.recover();self.audit_completed()

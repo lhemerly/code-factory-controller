@@ -9,7 +9,7 @@ class Fixture(unittest.TestCase):
   self.goals=[]
   for name in ['scroll','ink']:
    root=self.root/name;repo=root/'repository';repo.mkdir(parents=True)
-   self.goals.append({'id':name,'root':str(root),'repository':str(repo),'cycle_command':['/usr/bin/python3','/fake-cycle',str(root),'--one-cycle'],'between_cycles_seconds':0,'acceptance':{'completion_checks':[],'required_evidence':['scientific_goal']}})
+   self.goals.append({'id':name,'root':str(root),'repository':str(repo),'cycle_command':['/usr/bin/python3','/fake-cycle',str(root),'--one-cycle'],'between_cycles_seconds':0,'acceptance':{'completion_checks':[{'id':'fixture','evidence_type':'scientific_goal','argv':['/usr/bin/true']}],'required_evidence':['scientific_goal']}})
   self.m={'goals':self.goals,'worker_slots':1,'pool_lock':str(self.root/'pool.lock'),'controller':'/fake-controller','state':str(self.root/'state.json')}
   self.path=self.root/'state.json'
  def fake(self,goal,record,status='accepted'):
@@ -19,15 +19,20 @@ class Fixture(unittest.TestCase):
  def audit(self,g,out):
   if out['status']!='accepted':return None
   return {'job':out['job_id'],'commit':'a'*40,'receipt':'fixture-'+out['job_id'],'result':out['_result_path']}
- def manager(self,**kwargs):return D.Dispatcher(self.m,self.path,runner=kwargs.pop('runner',self.fake),audit=kwargs.pop('audit',self.audit),complete=kwargs.pop('complete',lambda g,m:{'passed':False,'status':'awaiting_acceptance'}),clock=lambda:self.clock,**kwargs)
+ def manager(self,**kwargs):return D.Dispatcher(self.m,self.path,runner=kwargs.pop('runner',self.fake),audit=kwargs.pop('audit',self.audit),complete=kwargs.pop('complete',lambda g,m:{'passed':False,'status':'acceptance_failed','phase':'check_evidence'}),clock=lambda:self.clock,**kwargs)
  def test_fair_milestone_scheduling_and_no_success_from_patch_or_prose(self):
   d=self.manager();[d.step() for _ in range(4)];self.assertEqual(self.calls,['scroll','ink','scroll','ink']);self.assertTrue(all(s['state']=='ready' for s in d.s['goals'].values()));self.assertIsNone(d.s['goals']['ink']['usage']['tokens']['cache']['write'])
  def test_reopen_continues_cursor_without_duplicate_dispatch(self):
   d=self.manager();d.step();d=self.manager();d.recover();d.step();self.assertEqual(self.calls,['scroll','ink'])
  def publication_fixture(self,passed=True):
   binding=self.root/'publication-binding.json';D.save(binding,{'require_goal_completion':True});self.m['main_publication']={'scroll':{'binding':str(binding)}}
-  stdout=self.root/'whole-goal.json';stdout.write_text('{}')
-  result={'passed':passed,'status':'passed' if passed else 'acceptance_failed','commit':'a'*40,'receipts':[{'stdout':str(stdout),'stdout_sha256':hashlib.sha256(stdout.read_bytes()).hexdigest()}]}
+  # Mocked completion, but retain the complete supported receipt shape so the
+  # real restart audit still checks its frozen policy, plan and artifact bytes.
+  stdout=self.root/'0.stdout';stderr=self.root/'0.stderr';stderr.write_text('');process=self.root/'0.process.json'
+  evidence={'passed':True,'skipped':False,'executed':1,'failed':0,'commit':'a'*40,'evidence_type':'scientific_goal'};D.save(stdout,evidence)
+  executor={'version':1,'execution_id':'mock-completion','observer':'linux_subreaper_waitpid_pidfd','root_exit_status':0,'quiescent':True,'leaked_descendants':False,'termination_reason':'root_exit','cleanup_error':None,'output_truncated':False};D.save(process,executor)
+  D.save(self.root/'0.plan.json',{'execution_id':'mock-completion','commit':'a'*40,'argv':['/usr/bin/env','CI=true','GIT_CONFIG_NOSYSTEM=1','GIT_CONFIG_GLOBAL=/dev/null','/usr/bin/true'],'seconds':300,'stdout':str(stdout),'log':str(stderr),'receipt':str(process),'cwd':str(self.root/'checkout')})
+  result={'passed':passed,'status':'passed' if passed else 'acceptance_failed','commit':'a'*40,'receipts':[{'check_id':'fixture','commit':'a'*40,'exit_status':0,'stdout':str(stdout),'stderr':str(stderr),'stdout_sha256':hashlib.sha256(stdout.read_bytes()).hexdigest(),'stderr_sha256':hashlib.sha256(stderr.read_bytes()).hexdigest(),'evidence':evidence,'executor':executor,'process_receipt':str(process)}]}
   d=self.manager(complete=lambda *_:result);d.publish_goal=lambda g:{'state':'awaiting_ci'};return d,stdout
  def test_publication_wait_restart_does_not_dispatch_another_coding_cycle(self):
   d,_=self.publication_fixture();d.step();self.assertEqual(d.s['goals']['scroll']['state'],'publishing');self.assertEqual(self.calls,['scroll'])
@@ -73,7 +78,7 @@ class Fixture(unittest.TestCase):
     p=pathlib.Path(g['root'])/'status.json';s=json.loads(p.read_text());s['next_check_utc']=datetime.datetime.fromtimestamp(100,datetime.timezone.utc).isoformat();D.save(p,s)
   d=self.manager(runner=fake);d.step();d.step();d.step();self.assertEqual(self.calls,['scroll','ink','ink']);self.clock=100;d.step();self.assertEqual(self.calls[-1],'scroll')
  def test_verified_success_stops_only_that_goal_and_completion_requires_receipts(self):
-  d=self.manager(complete=lambda g,m:{'passed':True,'status':'passed','commit':m['commit'],'receipts':[{'fixture_only':True}]} if g['id']=='scroll' else {'passed':False,'status':'awaiting_acceptance'});d.step();d.step();d.step();self.assertEqual(self.calls,['scroll','ink','ink']);self.assertEqual(d.s['goals']['scroll']['state'],'complete')
+  d=self.manager(complete=lambda g,m:{'passed':True,'status':'passed','commit':m['commit'],'receipts':[{'fixture_only':True}]} if g['id']=='scroll' else {'passed':False,'status':'acceptance_failed','phase':'check_evidence'});d.step();d.step();d.step();self.assertEqual(self.calls,['scroll','ink','ink']);self.assertEqual(d.s['goals']['scroll']['state'],'complete')
  def test_fake_success_without_receipts_does_not_stop_goal(self):
   d=self.manager(complete=lambda g,m:{'passed':True,'status':'passed','commit':m['commit']});d.step();self.assertEqual(d.s['goals']['scroll']['state'],'ready')
  def test_scope_uncertainty_and_policy_violation_pause_dispatch(self):
@@ -217,6 +222,27 @@ class Fixture(unittest.TestCase):
   d=self.manager(complete=lambda *_:(_ for _ in ()).throw(AssertionError('must not evaluate')));d.step();self.assertEqual(d.s['goals']['scroll']['state'],'paused');self.assertEqual(self.calls,[])
   g['initial_base']='main'
   with self.assertRaisesRegex(ValueError,'exact commit'):self.manager()
+ def test_unusable_completion_policy_never_dispatches_continuous_coding(self):
+  invalid=[{'completion_checks':[],'required_evidence':['cpu_tests']},
+           {'completion_checks':[{'id':'broken','evidence_type':'cpu_tests','argv':[]}],'required_evidence':['cpu_tests']}]
+  for index,policy in enumerate(invalid):
+   with self.subTest(policy=policy):
+    self.path=self.root/('invalid-'+str(index)+'.json');self.goals[0]['acceptance']=policy
+    d=self.manager();d.step()
+    self.assertEqual(self.calls,[]);self.assertEqual(d.s['goals']['scroll']['state'],'paused')
+    self.assertIn('prerequisites unavailable',d.s['goals']['scroll']['reason'])
+ def test_post_milestone_prerequisite_errors_pause_instead_of_repairing_configuration(self):
+  for index,result in enumerate([{'status':'awaiting_acceptance'},*[{'status':'acceptance_failed','phase':p} for p in ['policy','setup','check_launch']]]):
+   with self.subTest(result=result):
+    self.path=self.root/('prerequisite-'+str(index)+'.json')
+    d=self.manager(complete=lambda *_,r=result:{'passed':False,'reason':'Unavailable verifier',**r})
+    d.step();self.assertEqual(d.s['goals']['scroll']['state'],'paused')
+    self.assertIn('Unavailable verifier',d.s['goals']['scroll']['reason'])
+ def test_bounded_one_cycle_can_still_await_owner_defined_goal_checks(self):
+  self.goals[0]['admission_mode']='one_cycle'
+  self.goals[0]['acceptance']={'completion_checks':[],'required_evidence':['owner_scope_review']}
+  d=self.manager(complete=lambda *_:{'passed':False,'status':'awaiting_acceptance'})
+  d.step();self.assertEqual(self.calls,['scroll']);self.assertEqual(d.s['goals']['scroll']['state'],'paused')
  def test_missing_baseline_verifier_prerequisites_pause_before_spending_worker_time(self):
   self.goals[0]['initial_base']='a'*40
   d=self.manager(complete=lambda *_:{'passed':False,'status':'acceptance_failed','phase':'setup','reason':'Missing Git','receipts':[]});d.step()

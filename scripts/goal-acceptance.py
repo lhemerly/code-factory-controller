@@ -14,10 +14,19 @@ import uuid
 def validate_evidence(evidence, check, commit):
     if not isinstance(evidence, dict):
         raise ValueError('acceptance evidence must be a JSON object')
-    if (evidence.get('passed') is not True or evidence.get('skipped') is not False
+    if (evidence.get('passed') is not True
             or evidence.get('commit') != commit
             or evidence.get('evidence_type') != check['evidence_type']):
         raise ValueError('acceptance must pass without skips for the exact commit and evidence type')
+    if (('skipped' not in evidence and 'skipped_count' not in evidence)
+            or ('skipped' in evidence and evidence['skipped'] is not False)
+            or ('skipped_count' in evidence and
+                (type(evidence['skipped_count']) is not int or evidence['skipped_count'] != 0))):
+        raise ValueError('acceptance must explicitly report no skipped checks')
+    # Device-dispatch evidence has its own measured observation contract below.
+    # All other check verdicts must measure tests, not merely assert success.
+    if check['evidence_type'] != 'vulkan_execution' and not {'executed', 'failed'}.issubset(evidence):
+        raise ValueError('acceptance requires measured executed and failed counts')
     for key, positive in [('executed', True), ('failed', False), ('skipped_count', False)]:
         if key in evidence and (type(evidence[key]) is not int
                 or (evidence[key] <= 0 if positive else evidence[key] != 0)):
@@ -30,6 +39,36 @@ def validate_evidence(evidence, check, commit):
                 or not all(k in device for k in ('vendor_id', 'device_id'))):
             raise ValueError('Vulkan acceptance requires validated device dispatches and device identity')
     return evidence
+
+
+def validate_policy(manifest):
+    """Check approved prerequisites without launching a verifier or coding work."""
+    checks = manifest.get('completion_checks', [])
+    required = manifest.get('required_evidence', [])
+    if (not isinstance(checks, list) or not checks
+            or not isinstance(required, list) or not required
+            or not all(isinstance(v, str) and v for v in required)
+            or not all(isinstance(c, dict) and isinstance(c.get('id'), str) and c['id']
+                       and isinstance(c.get('evidence_type'), str) and c['evidence_type'] for c in checks)
+            or not set(required).issubset({c['evidence_type'] for c in checks})):
+        raise ValueError('mandatory completion checks/evidence are missing or invalid')
+    if len({c['id'] for c in checks}) != len(checks):
+        raise ValueError('completion check IDs must be unique')
+    for check in checks:
+        argv, timeout = check.get('argv'), check.get('timeout_seconds', 300)
+        if (not isinstance(argv, list) or not argv
+                or not all(isinstance(a, str) and a and '\x00' not in a for a in argv)
+                or type(timeout) not in (int, float) or not math.isfinite(timeout) or not 1 <= timeout <= 3600):
+            raise ValueError('invalid completion command/timeout')
+    repository = manifest.get('repository')
+    if not isinstance(repository, str) or not Path(repository).is_absolute():
+        raise ValueError('absolute repository required')
+    allowed = {'PATH', 'RUSTUP_HOME', 'CARGO_HOME', 'RUSTUP_TOOLCHAIN', 'VK_ICD_FILENAMES', 'VK_DRIVER_FILES', 'XDG_RUNTIME_DIR'}
+    extra = manifest.get('verification_environment', {})
+    if not isinstance(extra, dict) or not set(extra).issubset(allowed):
+        raise ValueError('unsupported verification environment key')
+    if any(not isinstance(value, str) or '\x00' in value for value in extra.values()):
+        raise ValueError('verification environment values must be strings without null bytes')
 
 
 def run_acceptance(manifest, state_path, commit):
@@ -67,6 +106,80 @@ def audit_processes(state_path):
             error.execution_unresolved = True
             raise
     return count
+
+
+def audit_logs(receipt, require_stderr=False):
+    for name in ('stdout', 'stderr'):
+        expected = receipt.get(name+'_sha256')
+        # Legacy standalone receipts may lack a stderr digest. They never
+        # establish supervised ownership; current supervised receipts need both.
+        if name == 'stderr' and expected is None and not require_stderr:
+            continue
+        if not expected or hashlib.sha256(Path(receipt[name]).read_bytes()).hexdigest() != expected:
+            raise ValueError('Goal acceptance evidence changed: '+name)
+
+
+def audit_result(manifest, result, commit):
+    """Revalidate saved completion without executing commands or sending signals.
+
+    Standalone unsupervised receipts remain supported only when the caller has
+    not required a verifier executable. Presence of either lifecycle field also
+    requires the complete supervised format, so partial records cannot downgrade.
+    """
+    validate_policy(manifest)
+    if (result.get('passed') is not True or result.get('status') != 'passed'
+            or result.get('commit') != commit):
+        raise ValueError('Goal completion identity changed')
+    checks = {check['id']: check for check in manifest['completion_checks']}
+    receipts = result.get('receipts', [])
+    if (not isinstance(receipts, list) or len(receipts) != len(checks)
+            or {r.get('check_id') for r in receipts} != set(checks)):
+        raise ValueError('Goal completion check coverage changed')
+    for receipt in receipts:
+        check = checks[receipt['check_id']]
+        supervised = (manifest.get('verifier_executable') is not None
+                      or 'executor' in receipt or 'process_receipt' in receipt)
+        if receipt.get('commit') != commit or type(receipt.get('exit_status')) is not int or receipt['exit_status'] != 0:
+            raise ValueError('Goal completion receipt changed')
+        audit_logs(receipt, require_stderr=supervised)
+        evidence = validate_evidence(json.loads(Path(receipt['stdout']).read_text()), check, commit)
+        if evidence != receipt.get('evidence'):
+            raise ValueError('Goal structured evidence changed')
+        if not supervised:
+            continue
+        stdout, stderr = Path(receipt['stdout']).resolve(), Path(receipt['stderr']).resolve()
+        process_path = stdout.with_suffix('.process.json')
+        if Path(receipt['process_receipt']).resolve() != process_path:
+            raise ValueError('Goal process receipt path changed')
+        observed = json.loads(process_path.read_text())
+        plan = json.loads(stdout.with_suffix('.plan.json').read_text())
+        if (observed != receipt.get('executor') or type(observed.get('version')) is not int
+                or observed['version'] != 1 or observed.get('observer') != 'linux_subreaper_waitpid_pidfd'
+                or type(observed.get('root_exit_status')) is not int or observed['root_exit_status'] != 0
+                or observed.get('quiescent') is not True or observed.get('leaked_descendants') is not False
+                or observed.get('termination_reason') != 'root_exit' or observed.get('cleanup_error')
+                or observed.get('output_truncated') is not False):
+            raise ValueError('Goal execution ownership unconfirmed or evidence changed')
+        env = {'CI': 'true', 'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null',
+               **manifest.get('verification_environment', {})}
+        env.pop('PATH', None)
+        argv = plan.get('argv', [])
+        # JSON object order is not part of the manifest fingerprint. Assignment
+        # order is also immaterial to env, but duplicates/extra assignments and
+        # changes to the actual command must still fail the binding check.
+        assignments = argv[1:1+len(env)] if isinstance(argv, list) else []
+        actual_env = dict(value.split('=', 1) for value in assignments
+                          if isinstance(value, str) and '=' in value)
+        command_matches = (isinstance(argv, list) and argv[:1] == ['/usr/bin/env']
+                           and len(assignments) == len(actual_env) == len(env) and actual_env == env
+                           and argv[1+len(env):] == check['argv'])
+        if (not observed.get('execution_id') or plan.get('execution_id') != observed['execution_id']
+                or plan.get('commit') != commit or not command_matches
+                or plan.get('seconds') != math.ceil(check.get('timeout_seconds', 300))
+                or plan.get('stdout') != str(stdout) or plan.get('log') != str(stderr)
+                or plan.get('receipt') != str(process_path) or plan.get('cwd') != str(stdout.parent/'checkout')):
+            raise ValueError('Goal process plan binding changed')
+    return result
 
 
 def supervised_check(executable, argv, checkout, env, timeout, stdout, stderr, receipt):
@@ -126,21 +239,18 @@ def supervised_check(executable, argv, checkout, env, timeout, stdout, stderr, r
 
 def _run_acceptance(manifest, state_path, commit, receipts, setup):
     checks = manifest.get('completion_checks', [])
-    required = set(manifest.get('required_evidence', []))
-    if not checks or not required or not required.issubset({c['evidence_type'] for c in checks}):
+    required = manifest.get('required_evidence', [])
+    if not checks or not required:
         return {'passed': False, 'status': 'awaiting_acceptance', 'reason': 'mandatory completion checks/evidence are missing'}
+    if (isinstance(required, list) and all(isinstance(v, str) for v in required)
+            and isinstance(checks, list) and all(isinstance(c, dict) and isinstance(c.get('evidence_type'), str) for c in checks)
+            and not set(required).issubset({c['evidence_type'] for c in checks})):
+        return {'passed': False, 'status': 'awaiting_acceptance', 'reason': 'mandatory completion checks/evidence are missing'}
+    validate_policy(manifest)
     repository = Path(manifest['repository'])
     if not repository.is_absolute() or not re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', commit):
         raise ValueError('absolute repository and exact commit required')
-    ids = [c['id'] for c in checks]
-    if len(set(ids)) != len(ids):
-        raise ValueError('completion check IDs must be unique')
-    allowed = {'PATH', 'RUSTUP_HOME', 'CARGO_HOME', 'RUSTUP_TOOLCHAIN', 'VK_ICD_FILENAMES', 'VK_DRIVER_FILES', 'XDG_RUNTIME_DIR'}
     extra = manifest.get('verification_environment', {})
-    if not isinstance(extra, dict) or not set(extra).issubset(allowed):
-        raise ValueError('unsupported verification environment key')
-    if any(not isinstance(value, str) or '\x00' in value for value in extra.values()):
-        raise ValueError('verification environment values must be strings without null bytes')
     env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'CI': 'true',
            'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null', **extra,
            'FACTORY_VERIFICATION_COMMIT': commit}
@@ -165,9 +275,6 @@ def _run_acceptance(manifest, state_path, commit, receipts, setup):
         raise
     for index, check in enumerate(checks):
         argv, timeout = check['argv'], check.get('timeout_seconds', 300)
-        if (not isinstance(argv, list) or not argv or not all(isinstance(a, str) and a for a in argv)
-                or type(timeout) not in (int, float) or not math.isfinite(timeout) or not 1 <= timeout <= 3600):
-            raise ValueError('invalid completion command/timeout')
         stdout, stderr = output / f'{index}.stdout', output / f'{index}.stderr'
         receipt = {'check_id': check['id'], 'commit': commit, 'exit_status': None,
                    'stdout': str(stdout), 'stderr': str(stderr)}

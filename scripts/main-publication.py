@@ -150,17 +150,7 @@ class Publisher:
   if b.get('require_goal_completion'):
    evaluation=read(pathlib.Path(b['goal_root'])/'goal-evaluation.json');result=evaluation.get('result',{})
    if evaluation.get('goal_id')!=goal['id'] or evaluation.get('commit')!=commit or result.get('commit')!=commit or result.get('passed') is not True or result.get('status')!='passed' or not result.get('receipts'):raise ValueError('Independent whole-goal completion missing')
-   expected={c['id']:c for c in goal['acceptance']['completion_checks']}
-   if len(result['receipts'])!=len(expected) or {c['check_id'] for c in result['receipts']}!=set(expected):raise ValueError('Whole-goal check coverage changed')
-   if not set(goal['acceptance']['required_evidence']).issubset({c['evidence_type'] for c in expected.values()}):raise ValueError('Whole-goal evidence requirements missing')
-   for check in result['receipts']:
-    if check.get('commit')!=commit or sha(check['stdout'])!=check['stdout_sha256']:raise ValueError('Whole-goal completion evidence changed')
-    evidence=self.D.acceptance.validate_evidence(read(check['stdout']),expected[check['check_id']],commit)
-    if evidence!=check.get('evidence'):raise ValueError('Whole-goal structured evidence changed')
-    executor=check.get('executor',{})
-    if executor.get('version')!=1 or executor.get('observer')!='linux_subreaper_waitpid_pidfd' or executor.get('root_exit_status')!=0 or executor.get('quiescent') is not True or executor.get('leaked_descendants') is not False or executor.get('termination_reason')!='root_exit' or executor.get('output_truncated') is not False or executor.get('cleanup_error'):raise ValueError('Whole-goal execution ownership unconfirmed')
-    if read(check['process_receipt'])!=executor:raise ValueError('Whole-goal process evidence changed')
-    if check.get('stderr_sha256') and sha(check['stderr'])!=check['stderr_sha256']:raise ValueError('Whole-goal stderr changed')
+   self.D.acceptance.audit_result({**goal['acceptance'],'repository':goal['repository'],'verifier_executable':self.D.queue_api.read(pathlib.Path(b['goal_root'])/'supervisor.json')['controller']},result,commit)
   existing=read(self.root/'state.json') if (self.root/'state.json').exists() else None
   if existing and existing['binding']!=b:raise ValueError('Immutable publication binding changed')
   if existing and existing.get('intent',{}).get('state')!='confirmed' and existing.get('intent',{}).get('commit')!=commit:raise ValueError('Unresolved main intent owns this goal')

@@ -186,7 +186,7 @@ class AcceptancePolicyTests(unittest.TestCase):
             manifest.pop('verification_environment')
             manifest['base_commit'] = commit
             manifest['completion_checks'][0]['argv'] = [sys.executable, '-c',
-                "import os,json; assert os.environ['PATH']=='/usr/bin:/bin'; print(json.dumps({'passed':True,'skipped':False,'commit':os.environ['FACTORY_VERIFICATION_COMMIT'],'evidence_type':'cpu_tests'}))"]
+                "import os,json; assert os.environ['PATH']=='/usr/bin:/bin'; print(json.dumps({'passed':True,'skipped':False,'executed':1,'failed':0,'commit':os.environ['FACTORY_VERIFICATION_COMMIT'],'evidence_type':'cpu_tests'}))"]
             done = {'state': 'done', 'integrated_commit': commit, 'delivery': {'commit': commit}}
             path = root / 'state.json'
             with mock.patch.dict(os.environ, {'PATH': '/usr/bin:/bin'}):
