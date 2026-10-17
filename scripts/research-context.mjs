@@ -62,6 +62,44 @@ export async function loadGoalEvaluation(root,goal,commit){
  return {summary:{commit,status:result.status,passed:result.passed,phase:result.phase??null,
   reason:typeof result.reason==='string'?result.reason.slice(0,600):null,checks,omitted_checks:omitted},sha256:digest(bytes)};
 }
+const hex64=/^[a-f0-9]{64}$/;
+// Identity that an authoritative reconciliation must carry unchanged from the
+// original failed result. Reconciliation may clear the fence and adopt the
+// controller-confirmed recovery, but it may never rewrite who or what ran.
+const reconciledIdentity=['sequence','ended_utc','job_id','goal_id','attempt','session','child','parent','worktree','base','candidate','status'];
+// A reconciled result is only evidence when it is the exact sibling attestation of
+// the retained original failure and the live controller independently confirms the
+// same stop. Anything missing or mismatched fails closed; it never falls back to the
+// stale original fence or silently drops the cycle.
+async function loadReconciledResult({dir,cfg,inspect}){
+ const path=resolve(dir,'reconciled-result.json');let bytes;
+ try{bytes=await readFile(path)}catch(e){if(e.code==='ENOENT')return null;throw e}
+ const reconciled=JSON.parse(bytes),provenance=reconciled.reconciliation;
+ if(!provenance||typeof provenance!=='object'||typeof provenance.original_result!=='string'||
+    !hex64.test(provenance.original_result_sha256??'')||!hex64.test(provenance.controller_sha256??''))
+  throw Error('Reconciled result lacks verifiable provenance');
+ // Only the exact sibling result.json is acceptable original evidence.
+ const originalPath=resolve(dir,'result.json');
+ if(resolve(dir,provenance.original_result)!==originalPath)throw Error('Reconciled result must reference its exact sibling original evidence');
+ const original=await readFile(originalPath),originalRecord=JSON.parse(original);
+ if(digest(original)!==provenance.original_result_sha256)throw Error('Reconciled original result bytes changed');
+ if(reconciled.status!=='failed')throw Error('Reconciled result must retain the failed unaccepted status');
+ if(reconciled.cleanup_confirmed!==true)throw Error('Reconciled result lacks positive cleanup confirmation');
+ if(reconciled.fence_error)throw Error('Reconciled result still reports an unresolved fence error');
+ if(reconciled.prior_fence_error!==originalRecord.fence_error)throw Error('Reconciled result did not preserve the original fence evidence');
+ for(const key of reconciledIdentity)
+  if(JSON.stringify(reconciled[key])!==JSON.stringify(originalRecord[key]))throw Error('Reconciled result changed '+key+' identity');
+ // The attestation pins the controller that performed the recovery.
+ if(digest(await readFile(cfg.controller))!==provenance.controller_sha256)throw Error('Reconciled controller bytes changed since attestation');
+ // The live controller, not the record, decides whether the stop is authoritative.
+ const status=await inspect(cfg.controller,resolve(dir,'controller.json'),reconciled.job_id),live=status?.execution_recovery;
+ if(!live||live.execution_stop?.status!=='confirmed'||typeof live.accounting?.status!=='string'||live.accounting.status==='violating'||
+    typeof live.stop_id!=='string'||!live.stop_id)
+  throw Error('Reconciled result requires a current confirmed stop and nonviolating accounting');
+ if(reconciled.recovery?.stop_id!==live.stop_id)throw Error('Reconciled stop identity no longer matches the controller');
+ if(typeof reconciled.attempt!=='string'||!reconciled.attempt||live.attempt_id!==reconciled.attempt)throw Error('Reconciled attempt identity no longer matches the controller');
+ return {record:reconciled,result_sha256:digest(bytes)};
+}
 export async function buildResearchContext({root,repo,state,goal,cfg,beforeSequence=Infinity,inspect=inspectCycle,maxBytes=7900}){
  const base=state.base;
  if(!oid.test(base??'')||git(repo,'rev-parse',base+'^{commit}')!==base)throw Error('Context base must be an exact existing commit');
@@ -70,11 +108,17 @@ export async function buildResearchContext({root,repo,state,goal,cfg,beforeSeque
  const completed=[];
  for(const directory of directories.filter(d=>/^\d{6,}$/.test(d)&&Number(d)<beforeSequence).sort((a,b)=>Number(b)-Number(a))){
   const dir=resolve(root,'cycles',directory);let bytes;
-  try{bytes=await readFile(resolve(dir,'result.json'))}catch(e){if(e.code==='ENOENT')continue;throw e}
+  try{bytes=await readFile(resolve(dir,'result.json'))}catch(e){
+   if(e.code!=='ENOENT')throw e;
+   // A reconciliation without its retained original is unverifiable, not absent.
+   try{await readFile(resolve(dir,'reconciled-result.json'))}catch(e2){if(e2.code==='ENOENT')continue;throw e2}
+   throw Error('Reconciled result is missing its original failed evidence: '+directory);
+  }
   const record=JSON.parse(bytes);
   if(record.sequence!==Number(directory))throw Error('Cycle sequence identity mismatch');
   if(!record.ended_utc)throw Error('Prior cycle has no terminal evidence: '+directory);
-  completed.push({dir,record,result_sha256:digest(bytes)});
+  const reconciled=await loadReconciledResult({dir,cfg,inspect});
+  completed.push(reconciled?{dir,record:reconciled.record,result_sha256:reconciled.result_sha256}:{dir,record,result_sha256:digest(bytes)});
  }
  const latest=completed[0]?.record;
  if(latest&&latest.status!=='all_free_unavailable'&&!(latest.status==='accepted'?recoveryAction(latest)==='continue':replacementAllowed(latest)))throw Error('Latest cycle lacks confirmed ownership/cleanup for admission');

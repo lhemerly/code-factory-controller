@@ -191,3 +191,46 @@ test('large diagnostic sets remain bounded and omissions explicit after all dige
  const e=await loadGoalEvaluation(f.root,f.input.goal,f.first);assert(e.summary.omitted_checks>0);
  assert(Buffer.byteLength(JSON.stringify(e.summary))<3400);assert(Buffer.byteLength((await buildResearchContext(f.input)).text)<=7900);
 });
+
+// A real native loss is reconciled by scripts/reconcile-stopped-v2.mjs, which keeps
+// the original failed result.json and writes a sibling reconciled-result.json that
+// clears the fence. Admission must honor that independently verified evidence
+// without rewriting the original and without treating the retained candidate as
+// accepted.
+async function reconciled(t){
+ const f=await fixture(t),c=await f.cycle(1,f.second,false);f.input.state.base=f.second;f.input.cfg.controller=join(f.root,'controller-binary');await writeFile(f.input.cfg.controller,'fixture controller bytes');
+ const original=join(c.dir,'result.json');
+ Object.assign(c.record,{goal_id:f.input.goal.id,attempt:'attempt-1',child:'native-1',parent:'parent-1',worktree:f.repo,fence_error:'transport lost',recovery:{execution_stop:{status:'unconfirmed'},accounting:{status:'unknown'}}});
+ const bytes=Buffer.from(JSON.stringify(c.record));await writeFile(original,bytes);
+ const recovery={stop_id:'stop-1',attempt_id:'attempt-1',job_id:c.record.job_id,session_id:'native-1',execution_stop:{status:'confirmed'},accounting:{status:'settled_zero'}};c.status.execution_recovery=structuredClone(recovery);
+ const record={...c.record,prior_fence_error:c.record.fence_error,fence_error:null,execution_stop:'confirmed',recovery,cleanup_confirmed:true,reconciliation:{original_result:original,original_result_sha256:sha(bytes),controller_sha256:sha(await readFile(f.input.cfg.controller)),method:'fixture only'}};
+ const path=join(c.dir,'reconciled-result.json');await writeFile(path,JSON.stringify(record));return {...f,c,record,path,original,bytes};
+}
+test('authoritative reconciliation supersedes original fence without rewriting evidence or accepting the candidate',async t=>{
+ const f=await reconciled(t);const ctx=await buildResearchContext(f.input);
+ assert.match(ctx.text,/UNACCEPTED input/);assert.match(ctx.text,/"stop":"confirmed"/);
+ assert.equal(await readFile(f.original,'utf8'),f.bytes.toString());
+ assert.equal(ctx.provenance.sources[0].result_sha256,sha(await readFile(f.path)));
+ assert.equal((await buildResearchContext({...f.input,state:{base:f.second,last_cycle:{sequence:0}}})).text,ctx.text);
+});
+test('changed original bytes invalidate reconciliation',async t=>{
+ const f=await reconciled(t);await writeFile(f.original,Buffer.concat([f.bytes,Buffer.from('\n')]));await assert.rejects(buildResearchContext(f.input));
+});
+test('incorrect original hash and arbitrary source path are refused',async t=>{
+ const f=await reconciled(t);for(const change of [{original_result_sha256:'0'.repeat(64)},{original_result:join(f.root,'unrelated.json')}]){const r={...f.record,reconciliation:{...f.record.reconciliation,...change}};await writeFile(f.path,JSON.stringify(r));await assert.rejects(buildResearchContext(f.input));}
+});
+test('reconciliation cannot change native identity candidate or goal',async t=>{
+ const f=await reconciled(t);for(const change of [{candidate:f.first},{attempt:'other'},{child:'other'},{job_id:'other'},{goal_id:'foreign'},{worktree:'/foreign'}]){await writeFile(f.path,JSON.stringify({...f.record,...change}));await assert.rejects(buildResearchContext(f.input));}
+});
+test('current stop and accounting remain authoritative',async t=>{
+ const f=await reconciled(t);for(const change of [{stop_id:'other'},{execution_stop:{status:'unconfirmed'}},{accounting:{status:'violating'}}]){f.c.status.execution_recovery={...f.record.recovery,...change};await assert.rejects(buildResearchContext(f.input));}
+});
+test('changed controller bytes refuse old reconciliation attestation',async t=>{
+ const f=await reconciled(t);await writeFile(f.input.cfg.controller,'changed executable');await assert.rejects(buildResearchContext(f.input));
+});
+test('reconciliation cannot claim acceptance or uncertain process cleanup',async t=>{
+ const f=await reconciled(t);for(const change of [{status:'accepted'},{cleanup_confirmed:false}]){await writeFile(f.path,JSON.stringify({...f.record,...change}));await assert.rejects(buildResearchContext(f.input));}
+});
+test('missing authoritative observation never permits replacement',async t=>{
+ const f=await reconciled(t);f.input.inspect=()=>{throw Error('controller unavailable')};await assert.rejects(buildResearchContext(f.input),/controller unavailable/);
+});
