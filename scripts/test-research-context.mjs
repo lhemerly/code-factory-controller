@@ -281,3 +281,13 @@ test('reconciliation cannot claim acceptance or uncertain process cleanup',async
 test('missing authoritative observation never permits replacement',async t=>{
  const f=await reconciled(t);f.input.inspect=()=>{throw Error('controller unavailable')};await assert.rejects(buildResearchContext(f.input),/controller unavailable/);
 });
+
+test('host Git ownership instructions survive context compaction or fail admission',async t=>{
+ const f=await fixture(t),context=await buildResearchContext(f.input);
+ assert.match(context.text,/GIT OWNERSHIP: Leave source edits uncommitted/);
+ assert.match(context.text,/Never run git add\/commit\/worktree remove\/prune/);
+ assert.match(context.text,/override GIT_DIR\/GIT_WORK_TREE/);
+ assert.match(context.text,/host verification does not require a worker-created commit/);
+ const required=context.text.split('\n\nPROJECT INSTRUCTIONS:')[0];
+ await assert.rejects(buildResearchContext({...f.input,maxBytes:Buffer.byteLength(required)-1}),/exceeds admission budget/);
+});

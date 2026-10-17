@@ -40,6 +40,61 @@ class PermissionResolutionRegression(unittest.TestCase):
   m=M.read(f['manifest'])
   for p in [kernel,kr,kp,qualification,publication,isolation,*map(pathlib.Path,runtime)]:m['trusted_files'][str(p)]=M.sha(p)
   put(f['manifest'],m);f['seal']();f.update(kernel=kernel,kernel_receipt=kr,kernel_plan=kp,qualification=qualification,publication=publication,isolation=isolation);return f
+ def host_git_fixture(self):
+  f=self.isolation_fixture();put=f['put'];root=f['root'];cycle=f['cycle']
+  out=M.read(cycle/'result.json');out['attempt']='11111111-2222-4333-8444-555555555555';out['worktree']=str(cycle/'controller/workers'/out['attempt']);put(cycle/'result.json',out)
+  command='cd '+str(root/'repository')+' && git worktree remove --force '+out['worktree']+' 2>&1 | tail -2; echo rc=$?; git worktree prune 2>&1 | tail -1; echo rc2=$?'
+  call={'type':'tool','name':'shell','executed':False,'state':{'status':'error','input':{'command':command},'error':{'type':'permission.rejected','message':'Permission denied: external_directory'}}}
+  put(cycle/'native-context-final.json',[{'content':[call]}]);(root/'task.txt').write_text('Read data/VERIFIER-CONTRACT.md. Leave edits uncommitted; host owns Git mutations.')
+  isolation=M.read(f['isolation']);context=P.parent/'research-context.mjs';isolation['runtime_files'][str(context)]=M.sha(context);put(f['isolation'],isolation)
+  qualified=M.read(f['qualification']);qualified['runtime_sha256'][context.name]=M.sha(context)
+  for key in ['worker_git_contract','host_git_denial_exact','pending_authorization_blocks']:qualified['checks'][key]=True
+  put(f['qualification'],qualified)
+  v=M.read(f['proof']);v.update(kind='host-git-ownership',identity={k:out[k] for k in v['identity']},original_sha256=M.sha(cycle/'result.json'),denial_history_sha256=M.sha(cycle/'native-context-final.json'),isolation_sha256=M.sha(f['isolation']),denied_action_sha256=M.digest(call),worker_task_sha256=M.sha(root/'task.txt'));put(f['proof'],v)
+  auth=M.read(f['authorization']);auth['scope'].update({k:v[k] for k in ['kind','original_sha256','denial_history_sha256','isolation_sha256','denied_action_sha256','worker_task_sha256']});auth['scope']['host_owns_git_mutations']=True;put(f['authorization'],auth)
+  m=M.read(f['manifest']);m['trusted_files'][str(context)]=M.sha(context);put(f['manifest'],m);live=M.read(f['status']);live['execution_recovery']['attempt_id']=out['attempt'];put(f['status'],live);f['live']=live;f['seal']();return f
+ def test_host_git_resolution_preserves_failure_and_never_approves_code(self):
+  f=self.host_git_fixture();paths=[f['cycle']/'result.json',f['cycle']/'native-context-final.json'];before=[p.read_bytes() for p in paths];result=self.audit(f)
+  self.assertEqual(result['kind'],'host-git-ownership');self.assertFalse(result['acceptance_granted']);self.assertEqual(result['access_grants'],[]);self.assertEqual(result['accounting'],'unknown');self.assertEqual(before,[p.read_bytes() for p in paths])
+  next_dir=f['root']/'cycles/000004';next_dir.mkdir();(next_dir/'operator-admit.json').write_text('{}')
+  with self.assertRaisesRegex(ValueError,'consumed'):self.audit(f)
+ def test_host_git_rejects_other_denials_even_when_owner_repins_history(self):
+  for case in ['target','command','executed','later-action','extra-denial','status','fingerprint']:
+   with self.subTest(case=case):
+    f=self.host_git_fixture();history=M.read(f['cycle']/'native-context-final.json');call=history[0]['content'][0]
+    if case=='target':call['state']['input']['command']=call['state']['input']['command'].replace('/controller/workers/','/controller/foreign/')
+    elif case=='command':call['state']['input']['command']+='; echo extra'
+    elif case=='executed':call['executed']=True
+    elif case=='later-action':history.append({'content':[{'name':'shell','state':{'status':'completed'}}]})
+    elif case=='extra-denial':history.append(copy.deepcopy(history[0]))
+    elif case=='status':call['state']['status']='streaming'
+    f['put'](f['cycle']/'native-context-final.json',history);v=M.read(f['proof']);v.update(denial_history_sha256=M.sha(f['cycle']/'native-context-final.json'),denied_action_sha256=M.digest(call) if case!='fingerprint' else 'changed');f['put'](f['proof'],v)
+    a=M.read(f['authorization']);a['scope'].update({k:v[k] for k in ['denial_history_sha256','denied_action_sha256']});f['put'](f['authorization'],a);f['seal']()
+    with self.assertRaises(ValueError):self.audit(f)
+ def test_host_git_requires_new_approval_contract_and_verified_runtime(self):
+  for case in ['pending','old-approval','task','context','qualification','publication','pause','cleanup','scope','foreign-worktree','missing-action-hash']:
+   with self.subTest(case=case):
+    f=self.host_git_fixture()
+    if case in ['pending','old-approval','scope']:
+     a=M.read(f['authorization'])
+     if case=='pending':a['decision']='pending'
+     elif case=='old-approval':a['scope']['kind']='owner-checkout-isolation'
+     else:a['scope']['host_owns_git_mutations']=False
+     f['put'](f['authorization'],a)
+    elif case=='task':(f['root']/'task.txt').write_text('Read data/VERIFIER-CONTRACT.md. Commit yourself.')
+    elif case in ['context','qualification']:
+     q=M.read(f['qualification'])
+     if case=='context':q['runtime_sha256']['research-context.mjs']='changed'
+     else:q['checks']['worker_git_contract']=False
+     f['put'](f['qualification'],q)
+    elif case=='publication':d=M.read(f['publication']);d['intent']['state']='awaiting_ci';f['put'](f['publication'],d)
+    elif case=='pause':(f['root']/'PAUSE').write_text('Keep paused')
+    elif case=='cleanup':d=M.read(f['receipt']);d['quiescent']=False;f['put'](f['receipt'],d)
+    elif case=='foreign-worktree':
+     out=M.read(f['cycle']/'result.json');out['worktree']='/foreign';f['put'](f['cycle']/'result.json',out);v=M.read(f['proof']);v['identity']['worktree']='/foreign';v['original_sha256']=M.sha(f['cycle']/'result.json');f['put'](f['proof'],v);a=M.read(f['authorization']);a['scope']['original_sha256']=v['original_sha256'];f['put'](f['authorization'],a)
+    else:v=M.read(f['proof']);v.pop('denied_action_sha256');f['put'](f['proof'],v)
+    f['seal']()
+    with self.assertRaises(ValueError):self.audit(f)
  def test_isolated_owner_checkout_resolution_preserves_subsequent_actions(self):
   f=self.isolation_fixture();before=(f['cycle']/'native-context-final.json').read_bytes();r=self.audit(f);self.assertEqual(r['kind'],'owner-checkout-isolation');self.assertEqual(r['access_grants'],[]);self.assertEqual(r['accounting'],'unknown');self.assertEqual(before,(f['cycle']/'native-context-final.json').read_bytes())
  def test_isolation_resolution_rejects_missing_or_changed_qualification(self):
@@ -97,7 +152,11 @@ class PermissionResolutionRegression(unittest.TestCase):
     elif kind=='authorization-scope':d=M.read(f['authorization']);d['scope']['same_goal_only']=False;f['put'](f['authorization'],d);f['seal']()
     with self.assertRaises((ValueError,KeyError)):self.audit(f)
  def test_context_admission_uses_audited_resolution_and_keeps_failure(self):
-  f=self.fixture();repo=f['root']/'repository';repo.mkdir()
+  self.context_admission(self.fixture())
+ def test_host_git_context_admission_and_pending_approval_gate(self):
+  self.context_admission(self.host_git_fixture())
+ def context_admission(self,f):
+  repo=f['root']/'repository';repo.mkdir()
   def git(*args):return subprocess.check_output(['/usr/bin/git','-C',str(repo),'-c','user.name=Synthetic','-c','user.email=synthetic@localhost',*args],text=True).strip()
   git('init','-q');(repo/'product.py').write_text('synthetic=1');git('add','.');git('commit','-qm','synthetic');base=git('rev-parse','HEAD')
   cfg=M.read(f['root']/'supervisor.json');cfg['initial_base']=base;f['put'](f['root']/'supervisor.json',cfg)
@@ -110,9 +169,13 @@ class PermissionResolutionRegression(unittest.TestCase):
   context=json.loads(subprocess.check_output([shutil.which('node'),'--input-type=module','-e',code,str(data)],text=True));resolution=context['provenance']['sources'][0]['permission_resolution'];self.assertEqual(resolution['accounting'],'unknown');self.assertTrue(resolution['prior_denial_preserved']);self.assertIn('unknown',context['text']);self.assertEqual(M.read(f['cycle']/'result.json')['failure_kind'],'blocked')
   auth['decision']='pending';f['put'](f['authorization'],auth);f['seal']();p=subprocess.run([shutil.which('node'),'--input-type=module','-e',code,str(data)],capture_output=True,text=True);self.assertNotEqual(p.returncode,0);self.assertIn('owner-pinned resolution audit failed',p.stderr)
  def test_owner_resume_rejects_before_mutating_pause(self):
+  self.owner_resume_pending(self.fixture())
+ def test_host_git_owner_resume_rejects_pending_before_mutation(self):
+  self.owner_resume_pending(self.host_git_fixture())
+ def owner_resume_pending(self,f):
   from unittest import mock
   spec=importlib.util.spec_from_file_location('resolution_dispatch',P.parent/'research-dispatch.py');D=importlib.util.module_from_spec(spec);spec.loader.exec_module(D)
-  f=self.fixture();out=M.read(f['cycle']/'result.json');out['recovery']=f['live']['execution_recovery'];f['put'](f['cycle']/'result.json',out)
+  out=M.read(f['cycle']/'result.json');out['recovery']=f['live']['execution_recovery'];f['put'](f['cycle']/'result.json',out)
   v=M.read(f['proof']);v['original_sha256']=M.sha(f['cycle']/'result.json');f['put'](f['proof'],v);a=M.read(f['authorization']);a['scope']['original_sha256']=v['original_sha256'];a['decision']='pending';f['put'](f['authorization'],a);f['seal']()
   native={'status':'paused','sequence':3,'current':None,'last_cycle':{'result':str(f['cycle']/'result.json')}};f['put'](f['root']/'status.json',native);f['locks'][1].close()
   with mock.patch.object(D.subprocess,'run') as run:
