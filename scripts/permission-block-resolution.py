@@ -60,7 +60,7 @@ def owner_lock(path):
 
 def audit(root,directory,controller,next_sequence):
  root=pathlib.Path(root).resolve();directory=pathlib.Path(directory).resolve();proof=regular(root/NAME);v=read(proof)
- require(v.get('version')==1 and v.get('kind')=='contract-only-checker-reference','Unsupported resolution')
+ require(v.get('version')==1 and v.get('kind') in ['contract-only-checker-reference','owner-checkout-isolation'],'Unsupported resolution')
  require(directory.parent==root/'cycles' and directory.name.isdigit(),'Foreign cycle')
  original=regular(directory/'result.json');out=read(original);sequence=int(directory.name)
  require(v['original_sha256']==sha(original) and v['sequence']==sequence==out['sequence'] and next_sequence==sequence+1,'Stale failure or next sequence')
@@ -76,7 +76,12 @@ def audit(root,directory,controller,next_sequence):
    state=content.get('state',{});error=state.get('error',{})
    if isinstance(error,dict) and error.get('type')=='permission.rejected':rejected.append(content)
  require(len(rejected)==1,'Additional or absent denial');call=rejected[0]
- require(call.get('name')=='read' and call.get('executed') is False and call['state'].get('input')=={'path':denied} and call['state']['error'].get('message')=='Permission denied: external_directory','Different denied action')
+ if v['kind']=='contract-only-checker-reference':
+  require(call.get('name')=='read' and call.get('executed') is False and call['state'].get('input')=={'path':denied} and call['state']['error'].get('message')=='Permission denied: external_directory','Different denied action')
+ else:
+  command='cd '+str(root/'repository')+' && python3 scripts/test-queue-cli.py 2>&1 | tail -15'
+  require(call.get('name')=='shell' and call.get('executed') is False and call['state'].get('input')=={'command':command} and call['state']['error'].get('message')=='Permission denied: external_directory','Different denied action')
+  require(isinstance(out.get('checkpoint'),str) and len(out['checkpoint'])==40 and v.get('checkpoint')==out['checkpoint'],'Unaccepted checkpoint mismatch')
  manifest_path=regular(v['manifest']);manifest=read(manifest_path);state=read(regular(manifest['state']));require(state['manifest_digest']==digest(manifest),'Owner manifest not reconciled');ownership=[owner_lock(manifest['pool_lock']),owner_lock(root/'supervisor.lock')]
  current=state.get('current')
  require(not current or current.get('goal')==out['goal_id'] and current.get('expected_sequence')==next_sequence,'Another active goal or sequence')
@@ -88,6 +93,8 @@ def audit(root,directory,controller,next_sequence):
  require(pins.get(str(pathlib.Path(__file__).resolve()))==sha(__file__),'Unpinned resolver implementation')
  authorization=pinned(v['authorization']);require(authorization.get('decision')=='approve' and authorization.get('source')=='verified-human-conversation' and all(isinstance(authorization.get(k),str) and authorization[k].strip() for k in ['thread_id','message_id','reply']),'Explicit human authorization missing')
  expected={'goal_id':out['goal_id'],'original_sha256':sha(original),'denial_history_sha256':sha(history),'packaging_sha256':v['packaging_sha256'],'next_sequence':next_sequence,'denied_file_remains_inaccessible':True,'missing_usage_remains_unknown':True,'same_goal_only':True}
+ if v['kind']=='owner-checkout-isolation':
+  expected.update(kind=v['kind'],checkpoint=out['checkpoint'],isolation_sha256=v['isolation_sha256'],post_denial_history_preserved=True,denied_command_will_not_be_retried=True)
  require(authorization.get('scope')==expected,'Authorization scope mismatch')
  packaging=pinned(v['packaging']);require(sha(v['packaging'])==v['packaging_sha256'] and packaging['applied'] is True and packaging['host_checker_bytes_unchanged'] is True and packaging['host_acceptance_wrapper_only_changes_checker_location'] is True and packaging['manifest_goals_acceptance_models_publication_and_permissions_unchanged'] is True and packaging['denied_helper_exposed_to_worker'] is False,'Packaging proof mismatch')
  data=root/'trusted/queue-publication-fixture';host=root/'trusted/queue-publication-host/check.py';contract=data/'VERIFIER-CONTRACT.md'
@@ -102,6 +109,18 @@ def audit(root,directory,controller,next_sequence):
  require((root/'trusted/verify.py').read_text().replace("T/'queue-publication-host/check.py'","T/'queue-publication-fixture/check.py'")== (before/'verify.py').read_text(),'Host verifier changes more than checker location')
  checks=pinned(v['verification']);required=['worker_inputs_contract_only','contract_readable','host_checker_hidden','denied_helper_hidden','contract_readonly','project_writable','git_control_readonly']
  require(checks['passed'] is True and all(checks['checks']['kernel'].get(k) is True for k in required) and checks['checks']['same_goal_admission_gate']['blocked'] is True,'Packaging verification missing')
+ if v['kind']=='owner-checkout-isolation':
+  isolation=pinned(v['isolation']);require(sha(v['isolation'])==v['isolation_sha256'],'Isolation evidence changed')
+  kernel=pinned(isolation['kernel_output']);required=['assigned_cwd','worker_writable','owner_source_hidden','owner_canary_hidden','owner_absolute_execution_blocked','owner_symlink_hidden','.git_readonly','frozen.txt_readonly','git_reads_work','git_status_work','git_metadata_readonly']
+  require(kernel.get('passed') is True and kernel.get('baseline') is False and all(kernel.get('checks',{}).get(k) is True for k in required),'Owner-source isolation not independently verified')
+  execution=pinned(isolation['kernel_receipt']);plan=pinned(isolation['kernel_plan'])
+  require(execution.get('observer')=='linux_subreaper_waitpid_pidfd' and execution.get('execution_id')==plan.get('execution_id') and execution.get('root_exit_status')==0 and execution.get('quiescent') is True and execution.get('leaked_descendants') is False and execution.get('cleanup_error') is None and plan.get('stdout')==isolation['kernel_output'],'Kernel verifier execution not confirmed')
+  qualified=pinned(isolation['qualification']);require(qualified.get('passed') is True and qualified.get('source_commit')==isolation.get('source_commit') and all(qualified.get('checks',{}).get(k) is True for k in ['candidate','integration','whole_goal','owner_source_hidden','denial_sticky','terminal_denial_blocked']),'Incomplete isolation qualification')
+  published=pinned(isolation['publication']);binding=published.get('binding',{});intent=published.get('intent',{})
+  require(binding.get('repository')=='lhemerly/code-factory-controller' and binding.get('repository_id')==1414818646 and binding.get('private') is True and binding.get('branch')=='main' and binding.get('required_checks')==['rust-and-contract'] and intent.get('state')=='confirmed' and intent.get('commit')==isolation['source_commit'] and intent.get('ci',{}).get('status')=='passed','Isolation source not confirmed on private main')
+  files=isolation.get('runtime_files',{});expected_files=[pathlib.Path(__file__).resolve().parent/n for n in ['spark-sandbox.mjs','continuous-ownership.mjs']]
+  require(set(files)==set(map(str,expected_files)),'Incomplete isolation runtime inventory')
+  for p in expected_files:require(files[str(p)]==sha(regular(p))==pins.get(str(p))==qualified.get('runtime_sha256',{}).get(p.name),'Isolation runtime changed')
  execution=pinned(v['owned_receipt']);plan=pinned(v['owned_plan']);require(execution['execution_id']==plan['execution_id'] and str(manifest_path) in plan['argv'] and execution['quiescent'] is True and execution['leaked_descendants'] is False and type(execution['root_exit_status']) is int,'Owned execution cleanup missing')
  observed=json.loads(subprocess.check_output([str(controller),'inspect','--config',str(directory/'controller.json'),'--job',out['job_id']],text=True,timeout=40));live=observed.get('execution_recovery') or {};require(observed.get('state')=='blocked' and live.get('stop_id')==v['stop_id'] and live.get('attempt_id')==out['attempt'] and live.get('session_id')==out['child'] and live.get('execution_stop',{}).get('status')=='confirmed','Authoritative stop changed')
  require(live.get('accounting',{}).get('status') in ['unknown','settled_zero'],'Unknown verdict or accounting violation')

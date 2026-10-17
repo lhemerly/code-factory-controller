@@ -26,6 +26,40 @@ class PermissionResolutionRegression(unittest.TestCase):
   seal();live={'state':'blocked','execution_recovery':{'stop_id':'synthetic-stop','attempt_id':out['attempt'],'session_id':out['child'],'execution_stop':{'status':'confirmed'},'accounting':{'status':'unknown'}}};put(status,live)
   return locals()
  def audit(self,f,next_sequence=4):return M.audit(f['root'],f['cycle'],f['controller'],next_sequence)
+ def isolation_fixture(self):
+  f=self.fixture();put=f['put'];root=f['root'];cycle=f['cycle'];base=f['base'];checkpoint='a'*40
+  out=M.read(cycle/'result.json');out['checkpoint']=checkpoint;put(cycle/'result.json',out)
+  history=[{'content':[{'name':'shell','executed':False,'state':{'input':{'command':'cd '+str(root/'repository')+' && python3 scripts/test-queue-cli.py 2>&1 | tail -15'},'error':{'type':'permission.rejected','message':'Permission denied: external_directory'}}},{'name':'shell','state':{'status':'completed','input':{'command':'synthetic subsequent action'},'content':[{'text':'retained subsequent action'}]}}]}];put(cycle/'native-context-final.json',history)
+  kernel=base/'kernel.json';put(kernel,{'passed':True,'baseline':False,'checks':{k:True for k in ['assigned_cwd','worker_writable','owner_source_hidden','owner_canary_hidden','owner_absolute_execution_blocked','owner_symlink_hidden','.git_readonly','frozen.txt_readonly','git_reads_work','git_status_work','git_metadata_readonly']}})
+  kr=base/'kernel-receipt.json';kp=base/'kernel-plan.json';put(kr,{'observer':'linux_subreaper_waitpid_pidfd','execution_id':'kernel','root_exit_status':0,'quiescent':True,'leaked_descendants':False,'cleanup_error':None});put(kp,{'execution_id':'kernel','stdout':str(kernel)})
+  runtime={str(P.parent/n):M.sha(P.parent/n) for n in ['spark-sandbox.mjs','continuous-ownership.mjs']};qualification=base/'qualification.json';put(qualification,{'passed':True,'source_commit':'b'*40,'checks':{k:True for k in ['candidate','integration','whole_goal','owner_source_hidden','denial_sticky','terminal_denial_blocked']},'runtime_sha256':{pathlib.Path(k).name:v for k,v in runtime.items()}})
+  publication=base/'publication.json';put(publication,{'binding':{'repository':'lhemerly/code-factory-controller','repository_id':1414818646,'private':True,'branch':'main','required_checks':['rust-and-contract']},'intent':{'state':'confirmed','commit':'b'*40,'ci':{'status':'passed'}}})
+  isolation=base/'isolation.json';put(isolation,{'source_commit':'b'*40,'kernel_output':str(kernel),'kernel_receipt':str(kr),'kernel_plan':str(kp),'qualification':str(qualification),'publication':str(publication),'runtime_files':runtime})
+  v=M.read(f['proof']);v.update(kind='owner-checkout-isolation',checkpoint=checkpoint,original_sha256=M.sha(cycle/'result.json'),denial_history_sha256=M.sha(cycle/'native-context-final.json'),isolation=str(isolation),isolation_sha256=M.sha(isolation));put(f['proof'],v)
+  auth=M.read(f['authorization']);auth['scope'].update(kind=v['kind'],checkpoint=checkpoint,original_sha256=v['original_sha256'],denial_history_sha256=v['denial_history_sha256'],isolation_sha256=v['isolation_sha256'],post_denial_history_preserved=True,denied_command_will_not_be_retried=True);put(f['authorization'],auth)
+  m=M.read(f['manifest'])
+  for p in [kernel,kr,kp,qualification,publication,isolation,*map(pathlib.Path,runtime)]:m['trusted_files'][str(p)]=M.sha(p)
+  put(f['manifest'],m);f['seal']();f.update(kernel=kernel,kernel_receipt=kr,kernel_plan=kp,qualification=qualification,publication=publication,isolation=isolation);return f
+ def test_isolated_owner_checkout_resolution_preserves_subsequent_actions(self):
+  f=self.isolation_fixture();before=(f['cycle']/'native-context-final.json').read_bytes();r=self.audit(f);self.assertEqual(r['kind'],'owner-checkout-isolation');self.assertEqual(r['access_grants'],[]);self.assertEqual(r['accounting'],'unknown');self.assertEqual(before,(f['cycle']/'native-context-final.json').read_bytes())
+ def test_isolation_resolution_rejects_missing_or_changed_qualification(self):
+  for kind in ['kernel','receipt','plan','qualification','runtime','publication','approval','checkpoint','history']:
+   with self.subTest(kind=kind):
+    f=self.isolation_fixture()
+    if kind=='kernel':d=M.read(f['kernel']);d['checks']['owner_source_hidden']=False;f['put'](f['kernel'],d)
+    elif kind=='receipt':d=M.read(f['kernel_receipt']);d['quiescent']=False;f['put'](f['kernel_receipt'],d)
+    elif kind=='plan':d=M.read(f['kernel_plan']);d['stdout']='other';f['put'](f['kernel_plan'],d)
+    elif kind in ['qualification','runtime']:
+     d=M.read(f['qualification'])
+     if kind=='runtime':d['runtime_sha256']['spark-sandbox.mjs']='changed'
+     else:d['checks']['terminal_denial_blocked']=False
+     f['put'](f['qualification'],d)
+    elif kind=='publication':d=M.read(f['publication']);d['intent']['state']='awaiting_ci';f['put'](f['publication'],d)
+    elif kind=='approval':d=M.read(f['authorization']);d['scope']['post_denial_history_preserved']=False;f['put'](f['authorization'],d)
+    elif kind=='checkpoint':d=M.read(f['proof']);d['checkpoint']='c'*40;f['put'](f['proof'],d)
+    else:d=M.read(f['cycle']/'native-context-final.json');d[0]['content'].pop();f['put'](f['cycle']/'native-context-final.json',d)
+    f['seal']()
+    with self.assertRaises(ValueError):self.audit(f)
  def test_preserves_original_unknown_usage_and_denial(self):
   f=self.fixture();before=(f['cycle']/'result.json').read_bytes();r=self.audit(f);self.assertEqual(r['accounting'],'unknown');self.assertIsNone(r['usage']['missing']);self.assertEqual(r['access_grants'],[]);self.assertFalse(r['acceptance_granted']);self.assertEqual(before,(f['cycle']/'result.json').read_bytes());self.assertTrue(r['prior_denial_preserved'])
  def test_next_preflight_directory_allowed_but_admission_consumes_resolution(self):
