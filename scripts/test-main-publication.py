@@ -42,6 +42,16 @@ class Tests(unittest.TestCase):
   for override in [{'allowed_paths':['docs']},{'protected_paths':['src']},{'forbidden_patterns':['print']}]:
    with self.assertRaises(ValueError):self.p.publish({**self.b,**override},{'id':'goal'})
   self.assertEqual(self.remote.pushes,[])
+ def test_real_git_text_source_naming_binary_markers_admitted_real_binary_refused(self):
+  # Genuine text source may name the publisher's binary markers as literals.
+  (self.repo/'src/detectors.py').write_text("binary=any(m in patch for m in (b'GIT binary patch',b'Binary files '))\n")
+  self.git('add','.');self.git('commit','-qm','text source names binary markers');text=self.git('rev-parse','HEAD')
+  self.assertRegex(self.p.content(self.b,self.repo,self.base,text),r'^[0-9a-f]{64}$')
+  # An actually binary real-Git diff stays refused by the text-scope gate.
+  (self.repo/'src/payload.bin').write_bytes(b'\0binary\xff\0payload')
+  self.git('add','.');self.git('commit','-qm','actually binary payload');binary=self.git('rev-parse','HEAD')
+  with self.assertRaisesRegex(ValueError,'text scope'):self.p.content(self.b,self.repo,text,binary)
+  self.assertEqual(self.remote.pushes,[])
  def test_divergent_main_never_overwritten(self):
   self.git('checkout','-q','--detach',self.base);(self.repo/'different').write_text('other');self.git('add','.');self.git('commit','-qm','other');self.remote.head=self.git('rev-parse','HEAD')
   with self.assertRaises(subprocess.CalledProcessError):self.publish()

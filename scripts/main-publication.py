@@ -88,7 +88,11 @@ class Publisher:
    if any(x in ['.git','.opencode','.aws','.ssh','node_modules','cycles'] for x in pathlib.PurePosixPath(p).parts) or pathlib.PurePosixPath(p).name.startswith('.env') or p.endswith(('.sqlite','.db','.pem','.key')):raise ValueError('Private runtime/credential artifact refused')
   # Scan the patch as data. No fetched or model-written code is executed by publication.
   patch=run(['/usr/bin/git','-C',str(repo),'diff','--no-ext-diff','--no-textconv',previous,commit,'--',*paths]).stdout
-  if len(patch)>2000000 or b'GIT binary patch' in patch or b'Binary files ' in patch:raise ValueError('Publication diff exceeds supported text scope')
+  # Git emits these markers only as column-0 header lines of a real binary diff;
+  # every text-hunk content line carries a +/-/space prefix, so source literals
+  # naming the markers are admitted text, never a binary header.
+  binary_headers=(b'Binary files ',b'GIT binary patch')
+  if len(patch)>2000000 or any(line.startswith(h) for line in patch.splitlines() for h in binary_headers):raise ValueError('Publication diff exceeds supported text scope')
   text=patch.decode()
   for pattern in [r'-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----',r'gh[pousr]_[A-Za-z0-9]{30,}',*b['forbidden_patterns']]:
    if re.search(pattern,text,re.I):raise ValueError('Publication content policy rejected patch')

@@ -8,7 +8,7 @@ import {createServer} from 'node:net';
 import {OpenCode} from './opencode-v2-client.mjs';
 import {buildResearchContext,createCycleDirectory,commitSubject} from './research-context.mjs';
 import {OwnershipLease,observeResearch,awaitNativeShells,RepeatedToolFailure} from './continuous-ownership.mjs';
-import {sandbox} from './spark-sandbox.mjs';
+import {sandbox,workerPermissions} from './spark-sandbox.mjs';
 import {waitForFactoryPlugin} from './native-plugin-readiness.mjs';
 import {freeModels,classify,route,failure,recoveryAction,replacementAllowed,approvedScope} from './free-model-policy.mjs';
 const oneCycle=process.argv.includes('--one-cycle');
@@ -94,7 +94,7 @@ async function runCycle(sequence){
   await atomic(resolve(dir,'host-private.json'),{operator,worker,password,controllerURL,nativeURL});
   await client.agent.list();
   out.plugin=await waitForFactoryPlugin(client,{checkpoint:observation=>atomic(resolve(dir,'plugin-readiness.json'),observation)});
-  const permissions=[{action:'*',resource:'*',effect:'deny'},{action:'pstack.workflow',resource:'feature',effect:'allow'},{action:'pstack.cancel',resource:'*',effect:'allow'},{action:'pstack.factory',resource:'*',effect:'allow'},{action:'read',resource:work+'/**',effect:'allow'},{action:'read',resource:'*',effect:'allow'},{action:'edit',resource:work+'/**',effect:'allow'},{action:'edit',resource:'*',effect:'allow'},{action:'shell',resource:'*',effect:'allow'}];
+  const permissions=workerPermissions(cfg,work);
   // Kernel mount boundary permits writes only to this code worktree, private native profile and /tmp.
   // Existing tests and provenance are frozen by Factory's independent protected-path check.
   parent=await client.session.create({title:goal.id+' research cycle '+sequence,location:{directory:work},model:{providerID,id:modelID},permissions});out.parent=parent.id;
@@ -120,7 +120,9 @@ async function runCycle(sequence){
   git(work,'add','--',...template.allowed_paths.filter(p=>{try{execFileSync('/usr/bin/test',['-e',resolve(work,p)]);return true}catch{return false}}));
   if(!git(work,'diff','--cached','--name-only'))throw Error('No approved candidate changes');
   git(work,'commit','-m',commitSubject(cfg,goal,sequence));out.candidate=git(work,'rev-parse','HEAD');out.scope_approved=true;
-  await client.session.command({sessionID:child.id,name:'pstack-factory',text:'verify verify-'+sequence+' '+out.candidate});await op('advance');
+  await client.session.command({sessionID:child.id,name:'pstack-factory',text:'verify verify-'+sequence+' '+out.candidate});
+  // The controller's durable scheduler advances verification. Keep operator
+  // HTTP calls short: a check may exceed the transport's 40-second timeout.
   let verified;while(!shutdown){lease.check();verified=await op('status');if(verified.active_verification_receipt)break;if(verified.state==='blocked')throw Error('Controller verification blocked: '+JSON.stringify(verified));await delay(1500)}
   out.candidate_status=verified;if(verified?.active_verification_receipt?.outcome!=='passed')throw Error('Independent verification failed: '+JSON.stringify(verified));
   await lease.tick(true);
