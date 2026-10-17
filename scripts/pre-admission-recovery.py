@@ -137,9 +137,19 @@ def advance_scope(manifest_path,goal_id,published_path,new_base):
   template=read(root/'job-template.json');paths=git('diff','--name-only',base,new_base).splitlines()
   if any(not any(p==a or p.startswith(a+'/') for a in template['allowed_paths']) or any(p==a or p.startswith(a+'/') for a in template['protected_paths']) for p in paths):raise ValueError('Verified source advance would widen repair scope')
   fingerprint=lambda c:hashlib.sha256(json.dumps({'cfg':c,'goal':goal_document},ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
-  if status['policy_hash']!=fingerprint(cfg):raise ValueError('Unreconciled native policy change')
+  prior=cfg;superseded=None
+  if status['policy_hash']!=fingerprint(cfg):
+   pending=read(root/'approved-policy-migration.json');previous=read(root/'verified-scope-publication.json');prior=pending.get('prior_configuration');binding=previous.get('binding',{})
+   if (pending.get('kind')!='verified-scope-base-advance' or not isinstance(prior,dict) or pending.get('from')!=status['policy_hash'] or fingerprint(prior)!=status['policy_hash'] or pending.get('to')!=fingerprint(cfg)
+       or {k:v for k,v in prior.items() if k!='scope_base'}!={k:v for k,v in cfg.items() if k!='scope_base'} or pending.get('publication_sha256')!=sha(root/'verified-scope-publication.json')
+       or binding.get('repository')!='lhemerly/code-factory-controller' or binding.get('repository_id')!=1414818646 or binding.get('private') is not True or binding.get('branch')!='main' or binding.get('required_checks')!=['rust-and-contract']
+       or previous.get('intent',{}).get('state')!='confirmed' or previous['intent'].get('commit')!=cfg.get('scope_base') or previous['intent'].get('ci',{}).get('status')!='passed'):
+    raise ValueError('Unreconciled native policy change')
+   git('merge-base','--is-ancestor',cfg['scope_base'],new_base)
+   superseded={'migration':pending,'publication':previous}
   after={**cfg,'scope_base':base};snapshot=root/'verified-scope-publication.json';migration=root/'approved-policy-migration.json'
-  approval={'kind':'verified-scope-base-advance','from':status['policy_hash'],'to':fingerprint(after),'prior_configuration':cfg,'publication_sha256':sha(published_path)}
+  approval={'kind':'verified-scope-base-advance','from':status['policy_hash'],'to':fingerprint(after),'prior_configuration':prior,'publication_sha256':sha(published_path)}
+  if superseded:approval['superseded_unapplied']=superseded
   save(journal,{'manifest':m,'state':state,'status':status,'configuration':cfg,'files':{name:(root/name).read_text() if (root/name).exists() else None for name in ['verified-scope-publication.json','approved-policy-migration.json']}})
   save(snapshot,published);save(migration,approval);save(root/'supervisor.json',after)
   # save() formatting is canonical; bind the exact snapshot bytes used by native.

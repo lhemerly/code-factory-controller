@@ -90,6 +90,26 @@ class PreAdmissionRegression(unittest.TestCase):
   with self.assertRaisesRegex(ValueError,'widen repair scope'):A.advance_scope(self.mp,'goal',pub,bad)
   d=json.loads(pub.read_text());d['intent']['ci']['status']='pending';self.save(pub,d)
   with self.assertRaisesRegex(ValueError,'verified private-main'):A.advance_scope(self.mp,'goal',pub,merged)
+ def pending_scope_fixture(self):
+  git,pub,published,merged=self.scope_fixture();A.advance_scope(self.mp,'goal',pub,merged);original=json.loads((self.root/'approved-policy-migration.json').read_text());git('checkout','--detach',published);(self.root/'repository/product.py').write_text('second verified upgrade');git('commit','-qam','second published');new=git('rev-parse','HEAD');git('checkout','--detach',merged);git('merge','--no-ff',new,'-m','Retain repair with next verified baseline');new_input=git('rev-parse','HEAD');d=json.loads(pub.read_text());d['intent']['commit']=new;self.save(pub,d);return pub,new_input,original
+ def test_composes_only_verified_unapplied_scope_without_rewriting_policy_history(self):
+  pub,new,old=self.pending_scope_fixture();before=json.loads((self.root/'status.json').read_text());A.advance_scope(self.mp,'goal',pub,new);after=json.loads((self.root/'approved-policy-migration.json').read_text());self.assertEqual(after['prior_configuration'],old['prior_configuration']);self.assertEqual(after['from'],before['policy_hash']);self.assertEqual(after['superseded_unapplied']['migration'],old);self.assertEqual(json.loads((self.root/'status.json').read_text())['policy_hash'],before['policy_hash']);self.assertEqual(json.loads((self.root/'status.json').read_text())['base'],new)
+ def test_pending_scope_still_requires_exact_original_configuration_and_green_ci(self):
+  pub,new,old=self.pending_scope_fixture();p=self.root/'approved-policy-migration.json';old['to']='0'*64;self.save(p,old);m=json.loads(self.mp.read_text());m['trusted_files'][str(p)]=A.sha(p);self.save(self.mp,m)
+  with self.assertRaisesRegex(ValueError,'Unreconciled native policy'):A.advance_scope(self.mp,'goal',pub,new)
+ def test_pending_scope_rejects_stale_publication_and_configuration_changes(self):
+  pub,new,old=self.pending_scope_fixture();pending_path=self.root/'approved-policy-migration.json';snapshot_path=self.root/'verified-scope-publication.json';original_snapshot=json.loads(snapshot_path.read_text())
+  for kind in ['ci','private','configuration','kind']:
+   with self.subTest(kind=kind):
+    pending=json.loads(json.dumps(old));snapshot=json.loads(json.dumps(original_snapshot))
+    if kind=='ci':snapshot['intent']['ci']['status']='pending'
+    elif kind=='private':snapshot['binding']['private']=False
+    elif kind=='configuration':pending['prior_configuration']['unapproved_permission']='broader'
+    else:pending['kind']='force-policy-change'
+    self.save(snapshot_path,snapshot);pending['publication_sha256']=A.sha(snapshot_path);self.save(pending_path,pending);m=json.loads(self.mp.read_text())
+    for p in [pending_path,snapshot_path]:m['trusted_files'][str(p)]=A.sha(p)
+    self.save(self.mp,m)
+    with self.assertRaisesRegex(ValueError,'Unreconciled native policy'):A.advance_scope(self.mp,'goal',pub,new)
  def test_real_supervisor_context_failure_precedes_job_and_process_creation(self):
   root=self.root/'preflight';repo=root/'repository';repo.mkdir(parents=True);(repo/'file').write_text('baseline')
   for args in [['init','-q'],['add','.'],['-c','user.name=Fixture','-c','user.email=fixture@localhost','commit','-qm','baseline']]:subprocess.run(['git','-C',str(repo),*args],check=True)
