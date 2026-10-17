@@ -90,9 +90,18 @@ class Dispatcher:
   fingerprint=digest(manifest)
   if self.s.get('manifest_digest',fingerprint)!=fingerprint:raise ValueError('Approved dispatcher manifest changed; explicit migration required')
   self.s['manifest_digest']=fingerprint
-  self.s['circuits']=merge_circuits(self.s.get('circuits',{}),*(self.read_status(g).get('circuits',{}) for g in goals))
+  self.s['circuits']=merge_circuits(self.s.get('circuits',{}),self.shared_circuits(),*(self.read_status(g).get('circuits',{}) for g in goals))
   self.persist()
  def persist(self):self.s['updated_utc']=utc();save(self.path,self.s)
+ def shared_circuits(self):
+  path=self.m.get('circuits_file')
+  if not path:return {}
+  try:return queue_api.read(path)
+  except FileNotFoundError:return {}
+ def sync_circuits(self,*sources):
+  # Re-read immediately before writing: an owner update may arrive after startup.
+  self.s['circuits']=merge_circuits(self.s.get('circuits',{}),self.shared_circuits(),*sources)
+  if self.m.get('circuits_file'):save(pathlib.Path(self.m['circuits_file']),self.s['circuits'])
  def select(self):
   goals=self.m['goals'];start=self.s['cursor']%len(goals)
   for offset in range(len(goals)):
@@ -185,8 +194,7 @@ class Dispatcher:
   if out.get('sequence')!=status['sequence'] or out.get('goal_id')!=goal['id']:raise RuntimeError('Cycle/goal identity mismatch')
   milestone=self.audit(goal,out)
   gs['last_result']=str(p);gs['usage']=out.get('usage');gs['model']=out.get('model');gs['native_status']=out.get('status');gs['harness']=goal['cycle_command']
-  self.s['circuits']=merge_circuits(self.s.get('circuits',{}),status.get('circuits',{}))
-  if self.m.get('circuits_file'):save(pathlib.Path(self.m['circuits_file']),self.s['circuits'])
+  self.sync_circuits(status.get('circuits',{}))
   if milestone:
    if not any(m['job']==milestone['job'] for m in gs['milestones']):gs['milestones'].append(milestone)
    result=self.complete(goal,milestone)
@@ -236,7 +244,7 @@ class Dispatcher:
    except Exception as error:
     self.s['status']='needs_attention';self.persist();raise
    self.s['current']=None;self.s['cursor']=(index+1)%len(self.m['goals']);self.persist();return True
-  if self.m.get('circuits_file'):save(pathlib.Path(self.m['circuits_file']),self.s['circuits'])
+  self.sync_circuits()
   self.s['status']='running';self.s['current']={'goal':goal['id'],'index':index,'expected_sequence':prior['sequence']+1,'phase':'spawning'};self.persist()
   try:
    self.runner(goal,self.s['current']);status=self.read_status(goal)
@@ -278,9 +286,8 @@ class Dispatcher:
   try:out=json.loads(p.read_text())
   except Exception:return False
   out['_result_path']=str(p)
-  # Already positively stopped cycles have independent controller evidence and
-  # must not be recovered again; preserve their existing failover instead of
-  # raising or executing another owned helper.
+  # A confirmed stop avoids another helper, but still requires finish() to
+  # audit the exact controller receipt and honor the saved pause before failover.
   current=status.get('current')
   recovery=out.get('recovery') or {}
   already_stopped = (
@@ -291,10 +298,7 @@ class Dispatcher:
    not out.get('fence_error') and
    recovery.get('execution_stop',{}).get('status')=='confirmed' and
    recovery.get('accounting',{}).get('status')!='violating')
-  if already_stopped:
-   self.s['circuits']=merge_circuits(self.s.get('circuits',{}),status.get('circuits',{}))
-   if self.m.get('circuits_file'):save(pathlib.Path(self.m['circuits_file']),self.s['circuits'])
-   return True
+  if already_stopped:return False
   if not self.native_recovery_qualified(goal,status,out):
    if out.get('status')=='failed' and out.get('phase') in ('native','native_shells'):
     raise RuntimeError('Native transport recovery fence: unqualified stopped result')

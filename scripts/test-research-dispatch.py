@@ -1,4 +1,5 @@
 import datetime,hashlib,importlib.util,json,os,pathlib,subprocess,sys,tempfile,time,unittest
+from unittest.mock import patch
 ROOT=pathlib.Path(__file__).resolve().parent
 spec=importlib.util.spec_from_file_location('dispatch',ROOT/'research-dispatch.py');D=importlib.util.module_from_spec(spec);spec.loader.exec_module(D)
 
@@ -220,4 +221,46 @@ class Fixture(unittest.TestCase):
   self.goals[0]['initial_base']='a'*40
   d=self.manager(complete=lambda *_:{'passed':False,'status':'acceptance_failed','phase':'setup','reason':'Missing Git','receipts':[]});d.step()
   self.assertEqual(d.s['goals']['scroll']['state'],'paused');self.assertEqual(self.calls,[]);self.assertIn('Missing Git',d.s['goals']['scroll']['reason'])
+ def test_shared_cooldown_is_ingested_before_first_admission(self):
+  path=self.root/'circuits.json';self.m['circuits_file']=str(path)
+  circuits={'opencode/beam-free':{'kind':'tool_failure','count':1,'until':999999}}
+  D.save(path,circuits);d=self.manager();self.assertEqual(d.s['circuits'],circuits);d.step();self.assertEqual(D.queue_api.read(path),circuits)
+ def test_shared_cooldown_update_after_startup_reaches_next_worker(self):
+  path=self.root/'circuits.json';self.m['circuits_file']=str(path);circuits={'opencode/beam-free':{'kind':'tool_failure','count':1,'until':999999}}
+  def run(g,r):self.assertEqual(D.queue_api.read(path),circuits);self.fake(g,r)
+  d=self.manager(runner=run);D.save(path,circuits);d.step();self.assertEqual(D.queue_api.read(path),circuits)
+ def test_shared_cooldown_does_not_shorten_saved_denial_on_restart(self):
+  path=self.root/'circuits.json';self.m['circuits_file']=str(path);denial={'kind':'denied','count':1,'until':9007199254740991}
+  D.save(path,{'opencode/big-pickle':denial});d=self.manager();d.step()
+  D.save(path,{'opencode/big-pickle':{'kind':'transient','count':1,'until':99}})
+  d=self.manager();d.step();self.assertEqual(D.queue_api.read(path)['opencode/big-pickle'],denial)
+ def test_shared_cooldown_update_during_cycle_survives_finish(self):
+  path=self.root/'circuits.json';self.m['circuits_file']=str(path);circuits={'opencode/beam-free':{'kind':'tool_failure','count':1,'until':999999}}
+  def run(g,r):self.fake(g,r);D.save(path,circuits)
+  d=self.manager(runner=run);d.step();self.assertEqual(D.queue_api.read(path),circuits)
+ def test_malformed_shared_cooldown_fails_before_admission(self):
+  path=self.root/'circuits.json';self.m['circuits_file']=str(path);d=self.manager();path.write_text('{')
+  with self.assertRaises(json.JSONDecodeError):d.step()
+  self.assertEqual(self.calls,[]);self.assertEqual(path.read_text(),'{')
+ def stopped_cycle_runner(self,paused):
+  def run(g,record):
+   self.fake(g,record,status='failed');root=pathlib.Path(g['root']);s=D.queue_api.read(root/'status.json');p=pathlib.Path(s['last_cycle']['result']);x=D.queue_api.read(p)
+   x.update(phase='native',failure_kind='blocked' if paused else 'transient',fence_error=None);x['recovery']['stop_id']='exact-stop';D.save(p,x);D.save(p.parent/'controller.json',{'fixture_only':True})
+   if paused:s.update(status='paused',pause_reason='Permission denied: external_directory')
+   D.save(root/'status.json',s)
+  return run
+ def stopped_cycle_controller(self,stop_id='exact-stop'):
+  return subprocess.CompletedProcess([],0,stdout=json.dumps({'execution_recovery':{'stop_id':stop_id,'execution_stop':{'status':'confirmed'},'accounting':{'status':'unknown'}}}))
+ def test_already_stopped_denial_is_controller_audited_and_stays_paused(self):
+  d=self.manager(runner=self.stopped_cycle_runner(True),audit=lambda g,o:D.Dispatcher.audit_cycle(d,g,o))
+  with patch.object(D.subprocess,'run',return_value=self.stopped_cycle_controller()) as inspect,patch.object(D.acceptance,'supervised_check',side_effect=AssertionError('No duplicate recovery helper')):d.step()
+  inspect.assert_called_once();self.assertIn('inspect',inspect.call_args.args[0]);self.assertEqual(d.s['goals']['scroll']['state'],'paused');self.assertIn('Permission denied',d.s['goals']['scroll']['reason']);self.assertEqual(self.calls,['scroll'])
+ def test_already_stopped_transient_is_controller_audited_before_failover(self):
+  d=self.manager(runner=self.stopped_cycle_runner(False),audit=lambda g,o:D.Dispatcher.audit_cycle(d,g,o))
+  with patch.object(D.subprocess,'run',return_value=self.stopped_cycle_controller()) as inspect,patch.object(D.acceptance,'supervised_check',side_effect=AssertionError('No duplicate recovery helper')):d.step()
+  inspect.assert_called_once();self.assertEqual(d.s['goals']['scroll']['state'],'ready');self.assertEqual(self.calls,['scroll']);self.assertEqual(d.s['goals']['scroll']['native_status'],'failed')
+ def test_already_stopped_controller_identity_mismatch_cannot_fail_over(self):
+  d=self.manager(runner=self.stopped_cycle_runner(False),audit=lambda g,o:D.Dispatcher.audit_cycle(d,g,o))
+  with patch.object(D.subprocess,'run',return_value=self.stopped_cycle_controller('different-stop')),patch.object(D.acceptance,'supervised_check',side_effect=AssertionError('No duplicate recovery helper')),self.assertRaisesRegex(RuntimeError,'exact failed-attempt stop'):d.step()
+  self.assertEqual(d.s['goals']['scroll']['state'],'paused');self.assertEqual(d.s['status'],'needs_attention');self.assertEqual(self.calls,['scroll'])
 if __name__=='__main__':unittest.main(verbosity=2)
