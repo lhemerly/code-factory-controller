@@ -2,7 +2,7 @@
 """Foreground, one-slot operator for existing Code Factory goal-cycle runners.
 Native execution and receipts remain authoritative in the existing runtime/controller.
 """
-import argparse, datetime, fcntl, hashlib, importlib.util, json, os, pathlib, shutil, signal, subprocess, sys, time, uuid
+import argparse, datetime, fcntl, hashlib, importlib.util, json, math, os, pathlib, shutil, signal, subprocess, sys, time, uuid
 ROOT=pathlib.Path(__file__).resolve().parent
 
 def module(name,file):
@@ -20,6 +20,31 @@ def identity(pid):
 
 def same_process(record):
  current=identity(record.get('pid',-1));return current is not None and all(current[k]==record[k] for k in ['pid','start_ticks','boot_id','uid'])
+
+def audited_recovery_usage(out, recovery):
+ """Report one freshly inspected session total; preserve unknown original usage otherwise."""
+ original=out.get('usage');session=out.get('child') or out.get('session')
+ if (out.get('status')!='failed' or not session or not isinstance(recovery,dict)
+     or recovery.get('session_id')!=session or recovery.get('attempt_id')!=out.get('attempt')
+     or not out.get('attempt') or not isinstance(recovery.get('stop_id'),str) or not recovery['stop_id']
+     or recovery.get('execution_stop',{}).get('status')!='confirmed'):
+  return original
+ accounting=recovery.get('accounting') or {}
+ if accounting.get('status')!='settled_zero':return original
+ observations=accounting.get('observations')
+ if not isinstance(observations,list):return original
+ sessions=[row for row in observations if isinstance(row,dict) and row.get('source')=='session']
+ if len(sessions)!=1 or sessions[0].get('id')!=session:return original
+ row=sessions[0];tokens=row.get('tokens');cost=row.get('cost')
+ if type(cost) not in (int,float) or cost!=0 or not isinstance(tokens,dict):return original
+ cache=tokens.get('cache')
+ if not isinstance(cache,dict):return original
+ values=[tokens.get(k) for k in ('input','output','reasoning')]+[cache.get(k) for k in ('read','write')]
+ if any(type(v) not in (int,float) or not math.isfinite(v) or v<0 for v in values):return original
+ return {'cost':cost,'tokens':{'input':values[0],'output':values[1],'reasoning':values[2],
+          'cache':{'read':values[3],'write':values[4]}},'model':row.get('model'),
+         'accounting_status':'settled_zero','source':'controller_recovery_session',
+         'session_id':session,'stop_id':recovery.get('stop_id')}
 
 def merge_circuits(*sources):
  result={}
@@ -141,6 +166,7 @@ class Dispatcher:
    observed=subprocess.run([self.m['controller'],'inspect','--config',str(config),'--job',out['job_id']],capture_output=True,text=True,check=True)
    current=json.loads(observed.stdout).get('execution_recovery') or {}
    if current.get('stop_id')!=recovery.get('stop_id') or current.get('execution_stop',{}).get('status')!='confirmed' or current.get('accounting',{}).get('status')=='violating':raise RuntimeError('Controller did not confirm exact failed-attempt stop; no replacement')
+   out['_audited_recovery']=current
    return None
   config=pathlib.Path(out['_result_path']).parent/'controller.json'
   p=subprocess.run([self.m['controller'],'inspect','--config',str(config),'--job',out['job_id']],capture_output=True,text=True,check=True)
@@ -192,8 +218,10 @@ class Dispatcher:
    gs['state']='paused';gs['reason']=status.get('pause_reason','No completed cycle');return
   p=pathlib.Path(last['result']);out=json.loads(p.read_text());out['_result_path']=str(p)
   if out.get('sequence')!=status['sequence'] or out.get('goal_id')!=goal['id']:raise RuntimeError('Cycle/goal identity mismatch')
+  # Saved JSON cannot supply the private current-controller observation.
+  out.pop('_audited_recovery',None)
   milestone=self.audit(goal,out)
-  gs['last_result']=str(p);gs['usage']=out.get('usage');gs['model']=out.get('model');gs['native_status']=out.get('status');gs['harness']=goal['cycle_command']
+  gs['last_result']=str(p);gs['usage']=audited_recovery_usage(out,out.get('_audited_recovery'));gs['model']=out.get('model');gs['native_status']=out.get('status');gs['harness']=goal['cycle_command']
   self.sync_circuits(status.get('circuits',{}))
   if milestone:
    if not any(m['job']==milestone['job'] for m in gs['milestones']):gs['milestones'].append(milestone)

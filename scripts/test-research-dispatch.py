@@ -1,4 +1,4 @@
-import datetime,hashlib,importlib.util,json,os,pathlib,subprocess,sys,tempfile,time,unittest
+import copy,datetime,hashlib,importlib.util,json,os,pathlib,subprocess,sys,tempfile,time,unittest
 from unittest.mock import patch
 ROOT=pathlib.Path(__file__).resolve().parent
 spec=importlib.util.spec_from_file_location('dispatch',ROOT/'research-dispatch.py');D=importlib.util.module_from_spec(spec);spec.loader.exec_module(D)
@@ -334,4 +334,35 @@ class Fixture(unittest.TestCase):
   d=self.manager(runner=self.stopped_cycle_runner(False),audit=lambda g,o:D.Dispatcher.audit_cycle(d,g,o))
   with patch.object(D.subprocess,'run',return_value=self.stopped_cycle_controller('different-stop')),patch.object(D.acceptance,'supervised_check',side_effect=AssertionError('No duplicate recovery helper')),self.assertRaisesRegex(RuntimeError,'exact failed-attempt stop'):d.step()
   self.assertEqual(d.s['goals']['scroll']['state'],'paused');self.assertEqual(d.s['status'],'needs_attention');self.assertEqual(self.calls,['scroll'])
+class RecoveredAccounting(unittest.TestCase):
+ def setUp(self):
+  self.original={'cost':None,'tokens':None,'model':None}
+  self.out={'status':'failed','attempt':'attempt-1','child':'session-1','usage':self.original}
+  self.row={'source':'session','id':'session-1','cost':0,'model':{'providerID':'opencode','id':'free'},'tokens':{'input':18,'output':7,'reasoning':3,'cache':{'read':41,'write':0}}}
+  self.recovery={'attempt_id':'attempt-1','session_id':'session-1','stop_id':'stop-1','execution_stop':{'status':'confirmed'},'accounting':{'status':'settled_zero','observations':[self.row]}}
+ def test_exact_current_session_totals_are_reported_once_without_mutating_original(self):
+  before=copy.deepcopy(self.out);self.recovery['accounting']['observations'].append({**self.row,'source':'message:1'})
+  observed=D.audited_recovery_usage(self.out,self.recovery)
+  self.assertEqual(observed['tokens'],self.row['tokens']);self.assertEqual(observed['source'],'controller_recovery_session');self.assertEqual(observed['accounting_status'],'settled_zero');self.assertEqual(self.out,before);self.assertEqual(self.original,{'cost':None,'tokens':None,'model':None})
+ def test_foreign_or_unconfirmed_identity_preserves_original(self):
+  for key,value in [('session_id','other'),('attempt_id','other'),('stop_id',None),('execution_stop',{'status':'unknown'})]:
+   r=copy.deepcopy(self.recovery);r[key]=value;self.assertIs(D.audited_recovery_usage(self.out,r),self.original)
+  r=copy.deepcopy(self.recovery);r['accounting']['observations'][0]['id']='other';self.assertIs(D.audited_recovery_usage(self.out,r),self.original)
+ def test_missing_or_duplicate_session_never_sums_message_counts(self):
+  for rows in [[],[{**self.row,'source':'message:1'}],[self.row,self.row]]:
+   r=copy.deepcopy(self.recovery);r['accounting']['observations']=rows;self.assertIs(D.audited_recovery_usage(self.out,r),self.original)
+ def test_unknown_violating_accounting_and_nonzero_cost_preserve_unknown(self):
+  for status in ['unknown','unobserved','violating',None]:
+   r=copy.deepcopy(self.recovery);r['accounting']['status']=status;self.assertIs(D.audited_recovery_usage(self.out,r),self.original)
+  for cost in [None,True,False,1,-1,float('nan')]:
+   r=copy.deepcopy(self.recovery);r['accounting']['observations'][0]['cost']=cost;self.assertIs(D.audited_recovery_usage(self.out,r),self.original)
+ def test_partial_or_invalid_token_counts_stay_unknown(self):
+  for value in [None,True,-1,float('nan'),float('inf'),'0']:
+   r=copy.deepcopy(self.recovery);r['accounting']['observations'][0]['tokens']['cache']['write']=value;self.assertIs(D.audited_recovery_usage(self.out,r),self.original)
+ def test_accepted_usage_does_not_get_replaced(self):
+  self.out['status']='accepted';self.assertIs(D.audited_recovery_usage(self.out,self.recovery),self.original)
+ def test_saved_private_observation_is_discarded_before_audit(self):
+  f=Fixture();f.setUp();self.addCleanup(f.doCleanups);goal=f.goals[0];f.fake(goal,{'expected_sequence':1},status='failed');root=pathlib.Path(goal['root']);status=D.queue_api.read(root/'status.json');path=pathlib.Path(status['last_cycle']['result']);out=D.queue_api.read(path);out['usage']=self.original;out['_audited_recovery']=self.recovery;D.save(path,out)
+  d=f.manager(audit=lambda *_:None);d.finish(goal,status);self.assertEqual(d.s['goals'][goal['id']]['usage'],self.original)
+
 if __name__=='__main__':unittest.main(verbosity=2)
