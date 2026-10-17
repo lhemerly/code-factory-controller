@@ -22,9 +22,11 @@ export function route(models, circuits, now) {
 }
 export function failure(circuits, model, kind, now) {
   const previous=circuits[model]??{};
+  // Permanent denials/ownership fences are never cleared or shortened by a later failure.
+  if (previous.kind==='denied' || previous.kind==='blocked') return {...circuits};
   const count=previous.kind===kind?(previous.count??0)+1:1;
-  // Access denials stay open until explicit operator reset. Do not probe around them.
   const until=kind==='denied'?Number.MAX_SAFE_INTEGER:now+(kind==='unavailable'?21600000:kind==='tool_failure'?3600000:Math.min(3600000,60000*2**Math.min(count-1,6)));
+  if (previous.until && previous.until > until) return {...circuits};
   return {...circuits,[model]:{kind,count,until}};
 }
 export function recoveryAction(record) {

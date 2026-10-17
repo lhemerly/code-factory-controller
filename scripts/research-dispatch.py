@@ -2,7 +2,7 @@
 """Foreground, one-slot operator for existing Code Factory goal-cycle runners.
 Native execution and receipts remain authoritative in the existing runtime/controller.
 """
-import argparse, datetime, fcntl, hashlib, importlib.util, json, os, pathlib, signal, subprocess, sys, time
+import argparse, datetime, fcntl, hashlib, importlib.util, json, os, pathlib, shutil, signal, subprocess, sys, time
 ROOT=pathlib.Path(__file__).resolve().parent
 
 def module(name,file):
@@ -111,6 +111,11 @@ class Dispatcher:
    if record.get('commit')!=goal.get('initial_base') or status.get('sequence',0)!=0 or status.get('current'):raise RuntimeError('Baseline evaluation recovery identity mismatch')
    if status.get('status')=='paused' or (pathlib.Path(goal['root'])/'PAUSE').exists():raise RuntimeError('Owner pause prevents baseline evaluation recovery')
    self.evaluate_baseline(goal);self.s['cursor']=(record['index']+1)%len(self.m['goals']);self.s['current']=None;self.persist();return
+  if record.get('phase')=='native_recovery':
+   if status.get('current') and status['current'].get('process') and same_process(status['current']['process']):raise RuntimeError('Existing cycle owner is alive; do not duplicate')
+   acceptance.audit_processes(self.path.parent/(goal['id']+'-goal'))
+   status=self.read_status(goal)
+   self.finish(goal,status);self.s['cursor']=(record['index']+1)%len(self.m['goals']);self.s['current']=None;self.persist();return
   if status.get('sequence')!=record['expected_sequence'] or status.get('current') or not status.get('last_cycle'):
    self.s['status']='needs_attention';self.persist();raise RuntimeError('Interrupted admission/cycle is uncertain; preserve evidence, no automatic dispatch')
   self.finish(goal,status);self.s['cursor']=(record['index']+1)%len(self.m['goals']);self.s['current']=None;self.persist()
@@ -243,10 +248,66 @@ class Dispatcher:
     if status['sequence']==self.s['current']['expected_sequence']-1 and status.get('status')=='paused' and not status.get('current'):
      self.s['goals'][goal['id']].update(state='paused',reason=status.get('pause_reason','Paused before admission'))
     else:raise RuntimeError('Expected one new completed cycle')
-   else:self.finish(goal,status)
+   else:
+    if not self.try_native_recovery(goal,status):
+     self.finish(goal,status)
   except Exception as error:
    self.s['status']='needs_attention';self.s['goals'][goal['id']]['state']='paused';self.s['goals'][goal['id']]['reason']=str(error);self.persist();raise
   self.s['cursor']=(index+1)%len(self.m['goals']);self.s['current']=None;self.persist();return True
+ def native_recovery_qualified(self,goal,status,out):
+  if out.get('status')!='failed':return False
+  if out.get('cleanup_confirmed') is not True:return False
+  if out.get('phase') not in ('native','native_shells'):return False
+  if out.get('failure_kind') not in ('transient','unavailable'):return False
+  root=pathlib.Path(goal['root'])
+  if (root/'PAUSE').exists():return False
+  if status.get('pause_reason') and 'PAUSE' in str(status.get('pause_reason')):return False
+  current=status.get('current') or {}
+  if current.get('process') and same_process(current['process']):return False
+  helper=ROOT/'reconcile-stopped-v2.mjs'
+  trusted=self.m.get('trusted_files',{})
+  if str(helper) not in trusted:return False
+  try:
+   if hashlib.sha256(helper.read_bytes()).hexdigest()!=trusted[str(helper)]:return False
+  except Exception:return False
+  return True
+ def try_native_recovery(self,goal,status):
+  last=status.get('last_cycle')
+  if not last:return False
+  p=pathlib.Path(last['result'])
+  try:out=json.loads(p.read_text())
+  except Exception:return False
+  out['_result_path']=str(p)
+  if not self.native_recovery_qualified(goal,status,out):
+   if out.get('status')=='failed' and out.get('phase') in ('native','native_shells'):
+    raise RuntimeError('Native transport recovery fence: unqualified stopped result')
+   return False
+  helper=ROOT/'reconcile-stopped-v2.mjs'
+  trusted=self.m.get('trusted_files',{})
+  if str(helper) not in trusted or hashlib.sha256(helper.read_bytes()).hexdigest()!=trusted[str(helper)]:
+   raise RuntimeError('Native recovery helper is not pinned')
+  # Persist current phase before helper execution.
+  if not self.s['current']:return False
+  self.s['current']['phase']='native_recovery'
+  self.persist()
+  state_path=self.path.parent/(goal['id']+'-goal')
+  outdir=pathlib.Path(str(state_path)+'.acceptance')/'native_recovery'
+  outdir.mkdir(parents=True,exist_ok=True)
+  stdout=outdir/'0.stdout'
+  stderr=outdir/'0.stderr'
+  receipt={}
+  node=shutil.which('node') or '/usr/bin/node'
+  argv=[node,str(helper),str(pathlib.Path(goal['root'])),str(self.m['controller'])]
+  env={'PATH':os.environ.get('PATH','/usr/bin:/bin')}
+  v2=os.environ.get('FACTORY_OPENCODE_V2_CLIENT')
+  if v2 is not None:env['FACTORY_OPENCODE_V2_CLIENT']=v2
+  executable=self.m['controller']
+  timeout=600
+  failure=acceptance.supervised_check(executable,argv,pathlib.Path(goal['root']),env,timeout,stdout,stderr,receipt)
+  if failure is not None:raise RuntimeError(str(failure))
+  status=self.read_status(goal)
+  self.finish(goal,status)
+  return True
  def run_cycle(self,goal,record):
   locks=Locks();locks.acquire(pathlib.Path(goal['root'])/'supervisor.lock')
   try:

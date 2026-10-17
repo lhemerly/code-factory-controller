@@ -2,7 +2,7 @@
 import {spawn,execFileSync} from 'node:child_process';import {readFile,writeFile,open,rename} from 'node:fs/promises';import {resolve,dirname} from 'node:path';import {createServer} from 'node:net';import {createHash} from 'node:crypto';
 import {OpenCode} from './opencode-v2-client.mjs';
 import {completeSessionInventory} from './native-session-inventory.mjs';
-import {sandbox} from './spark-sandbox.mjs';import {approvedScope,researchContinuation} from './free-model-policy.mjs';
+import {sandbox} from './spark-sandbox.mjs';import {approvedScope,researchContinuation,failure} from './free-model-policy.mjs';
 const root=resolve(process.argv[2]),binary=resolve(process.argv[3]),cfg=JSON.parse(await readFile(resolve(root,'supervisor.json'))),state=JSON.parse(await readFile(resolve(root,'status.json')));if(!state.current||!state.last_cycle)throw Error('Exact unresolved cycle required');
 const dir=state.current.directory,originalPath=state.last_cycle.result,originalBytes=await readFile(originalPath),out=JSON.parse(originalBytes),privateState=JSON.parse(await readFile(resolve(dir,'host-private.json'))),config=JSON.parse(await readFile(resolve(dir,'controller.json'))),work=out.worktree,repo=resolve(root,'repository'),profile=resolve(dir,'native');
 if(out.status!=='failed'||out.cleanup_confirmed!==true||out.sequence!==state.sequence||state.current.sequence!==out.sequence)throw Error('Missing exact stopped failed-cycle evidence');
@@ -36,6 +36,13 @@ try{
   await op('recover-bind-v2',{session_id:session.id});
  }
  await op('abort');result=await op('status');const recovery=result.execution_recovery;if(recovery?.execution_stop?.status!=='confirmed'||recovery.accounting?.status==='violating'||result.state!=='blocked'||recovery.attempt_id!==out.attempt)throw Error('Controller did not confirm exact safe stop');confirmed=true;
+if ((out.failure_kind==='transient'||out.failure_kind==='unavailable') && out.model) {
+ const kind=out.failure_kind;
+ const previous=state.circuits?.[out.model]??{};
+ if (previous.kind!=='denied' && previous.kind!=='blocked') {
+  state.circuits=failure(state.circuits??{},out.model,kind,Date.now());
+ }
+}
 }finally{for(const p of procs.toReversed())await stop(p)}
 if(!confirmed||!procs.every(p=>p.exitCode!==null||p.signalCode!==null))throw Error('Recovery cleanup unconfirmed; state remains fenced');
 if(out.candidate&&out.scope_approved){const diff=execFileSync('/usr/bin/git',['-C',repo,'diff','--name-only',cfg.initial_base,out.candidate],{encoding:'utf8'}).trim().split('\n').filter(Boolean);if(!approvedScope(diff,template))throw Error('Unaccepted repair candidate violates scope');}
