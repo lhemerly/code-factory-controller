@@ -6,7 +6,7 @@ import {resolve,dirname} from 'node:path';
 import {createHash,randomBytes} from 'node:crypto';
 import {createServer} from 'node:net';
 import {OpenCode} from './opencode-v2-client.mjs';
-import {buildResearchContext,createCycleDirectory,commitSubject} from './research-context.mjs';
+import {buildResearchContext,createCycleDirectory,commitSubject,captureVerificationDiagnostics} from './research-context.mjs';
 import {OwnershipLease,observeResearch,awaitNativeShells,RepeatedToolFailure} from './continuous-ownership.mjs';
 import {sandbox,workerPermissions} from './spark-sandbox.mjs';
 import {waitForFactoryPlugin} from './native-plugin-readiness.mjs';
@@ -124,7 +124,12 @@ async function runCycle(sequence){
   // The controller's durable scheduler advances verification. Keep operator
   // HTTP calls short: a check may exceed the transport's 40-second timeout.
   let verified;while(!shutdown){lease.check();verified=await op('status');if(verified.active_verification_receipt)break;if(verified.state==='blocked')throw Error('Controller verification blocked: '+JSON.stringify(verified));await delay(1500)}
-  out.candidate_status=verified;if(verified?.active_verification_receipt?.outcome!=='passed')throw Error('Independent verification failed: '+JSON.stringify(verified));
+  out.candidate_status=verified;
+  if(verified?.active_verification_receipt?.outcome!=='passed'){
+   try{out.verification_diagnostics=await captureVerificationDiagnostics(verified,artifact_reference=>op('log',{artifact_reference}),red)}
+   catch(e){out.diagnostic_error=red(String(e))}
+   throw Error('Independent verification failed: '+JSON.stringify(verified));
+  }
   await lease.tick(true);
   await client.session.command({sessionID:child.id,name:'pstack-factory',text:'submit submit-'+sequence+' Bounded verified milestone only; independent whole-goal evaluation still required'});
   let done;while(!shutdown){lease.check();done=await op('status');if(done.state==='done')break;if(done.state==='blocked')throw Error('Controller integration blocked: '+JSON.stringify(done));await delay(1500)}

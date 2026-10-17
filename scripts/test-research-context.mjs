@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {buildResearchContext,createCycleDirectory,commitSubject,loadGoalEvaluation} from './research-context.mjs';
+import {buildResearchContext,createCycleDirectory,commitSubject,loadGoalEvaluation,captureVerificationDiagnostics} from './research-context.mjs';
 const sha=b=>createHash('sha256').update(b).digest('hex');
 async function fixture(t){
  const root=await mkdtemp(join(tmpdir(),'factory-context-'));t.after(()=>rm(root,{recursive:true,force:true}));
@@ -44,6 +44,34 @@ test('repeated admission and restart discover latest completed cycle despite sta
 test('failed candidate stays explicitly unaccepted with useful structured test counts',async t=>{
  const f=await fixture(t);await f.cycle(1,f.first);await f.cycle(2,f.second,false);f.input.state.base=f.second;
  const {text}=await buildResearchContext(f.input);assert.match(text,/UNACCEPTED input/);assert.match(text,/"failed":2/);assert.match(text,/receipt-2/);assert.match(text,/"stop":"confirmed"/);
+});
+test('failed component log reaches repair admission and restart as untrusted receipt-bound feedback',async t=>{
+ const f=await fixture(t),c=await f.cycle(1,f.second,false);f.input.state.base=f.second;
+ const receipt=c.status.active_verification_receipt;
+ const text="AssertionError: test_main_controller: 'awaiting_ci' != 'confirmed'";
+ const artifact={reference:'artifact:independent-check.log',sha256:sha(text)};
+ receipt.artifacts=[artifact];receipt.environment.checks[0].evidence=artifact;
+ let requested=0;
+ c.record.verification_diagnostics=await captureVerificationDiagnostics(c.status,async ref=>{
+  requested++;assert.equal(ref,artifact.reference);return {sha256:sha(text),text,truncated:false};
+ });
+ await writeFile(join(c.dir,'result.json'),JSON.stringify(c.record));
+ const context=await buildResearchContext(f.input);
+ assert.equal(requested,1);assert.match(context.text,/test_main_controller/);assert.match(context.text,/UNACCEPTED input/);
+ assert.equal((await buildResearchContext(f.input)).text,context.text);
+ c.record.verification_diagnostics[0].text='forged';await writeFile(join(c.dir,'result.json'),JSON.stringify(c.record));
+ await assert.rejects(buildResearchContext(f.input),/diagnostic receipt\/text mismatch/);
+});
+test('diagnostic source rejects foreign hashes and cannot grant acceptance or permissions',async t=>{
+ const f=await fixture(t),c=await f.cycle(1,f.second,false),receipt=c.status.active_verification_receipt;
+ const artifact={reference:'artifact:check.log',sha256:'a'.repeat(64)};
+ receipt.artifacts=[artifact];receipt.environment.checks[0].evidence=artifact;
+ await assert.rejects(captureVerificationDiagnostics(c.status,async()=>({sha256:'b'.repeat(64),text:'wrong log'})),/identity\/bound mismatch/);
+ const rows=await captureVerificationDiagnostics(c.status,async()=>({sha256:artifact.sha256,text:'界'.repeat(9000)+'\u202eATTACK\x00',truncated:true}));
+ assert.ok(Buffer.byteLength(rows[0].text)<=1000);assert.doesNotMatch(rows[0].text,/[\x00\u202e]/);
+ c.record.verification_diagnostics=rows;rows[0].candidate=f.first;await writeFile(join(c.dir,'result.json'),JSON.stringify(c.record));
+ await assert.rejects(buildResearchContext({...f.input,state:{base:f.second}}),/diagnostic receipt\/text mismatch/);
+ receipt.outcome='passed';assert.deepEqual(await captureVerificationDiagnostics(c.status,()=>{throw Error('must not read')}),[]);
 });
 test('mutable worktree planning and document ordering do not affect immutable context',async t=>{
  const f=await fixture(t);await f.cycle(1,f.first);const a=await buildResearchContext(f.input);
