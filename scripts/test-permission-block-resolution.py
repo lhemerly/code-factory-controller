@@ -8,7 +8,7 @@ class PermissionResolutionRegression(unittest.TestCase):
   out={'status':'failed','failure_kind':'blocked','phase':'native','cleanup_confirmed':True,'sequence':3,'goal_id':'synthetic-goal','job_id':'synthetic-job','attempt':'synthetic-attempt','child':'synthetic-session','parent':'synthetic-parent','worktree':str(base/'worker'),'error':'Permission denied in native tool history','usage':{'accounting_status':'unknown','tokens':{'input':5},'missing':None}}
   put(cycle/'result.json',out);denied=str(base/'code-factory-recovery-owner/scripts/queue-fixture-policy.py');put(cycle/'native-context-final.json',[{'content':[{'name':'read','executed':False,'state':{'input':{'path':denied},'error':{'type':'permission.rejected','message':'Permission denied: external_directory'}}}]}]);(data/'VERIFIER-CONTRACT.md').write_text('Frozen output requirements');(host/'check.py').write_text('# Frozen independent oracle');(root/'trusted/verify.py').write_text('# Host invocation');(root/'task.txt').write_text('Read data/VERIFIER-CONTRACT.md. Host verifies independently.')
   packaging=base/'packaging.json';put(packaging,{'applied':True,'host_checker_bytes_unchanged':True,'host_acceptance_wrapper_only_changes_checker_location':True,'manifest_goals_acceptance_models_publication_and_permissions_unchanged':True,'denied_helper_exposed_to_worker':False,'host_checker_sha256':M.sha(host/'check.py'),'contract_sha256':M.sha(data/'VERIFIER-CONTRACT.md')})
-  verification=base/'verification.json';put(verification,{'passed':True,'checks':{'kernel':{'contract_only':True,'helper_hidden':True,'readonly':True},'same_goal_admission_gate':{'blocked':True}}})
+  verification=base/'verification.json';put(verification,{'passed':True,'checks':{'kernel':{k:True for k in ['worker_inputs_contract_only','contract_readable','host_checker_hidden','denied_helper_hidden','contract_readonly','project_writable','git_control_readonly']},'same_goal_admission_gate':{'blocked':True}}})
   pool=base/'pool.lock';goal_lock=root/'supervisor.lock';locks=[]
   for lock in [pool,goal_lock]:
    fd=lock.open('a');fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB);locks.append(fd);self.addCleanup(fd.close)
@@ -16,6 +16,8 @@ class PermissionResolutionRegression(unittest.TestCase):
   authorization=base/'authorization.json';scope={'goal_id':out['goal_id'],'original_sha256':M.sha(cycle/'result.json'),'denial_history_sha256':M.sha(cycle/'native-context-final.json'),'packaging_sha256':M.sha(packaging),'next_sequence':4,'denied_file_remains_inaccessible':True,'missing_usage_remains_unknown':True,'same_goal_only':True};put(authorization,{'decision':'approve','source':'verified-human-conversation','thread_id':'synthetic-thread','message_id':'synthetic-user-message','reply':'yes','scope':scope})
   proof=root/M.NAME;v={'version':1,'kind':'contract-only-checker-reference','sequence':3,'original_sha256':scope['original_sha256'],'identity':{k:out[k] for k in ['goal_id','job_id','attempt','child','parent','worktree']},'configuration_sha256':M.sha(root/'supervisor.json'),'denial_history_sha256':scope['denial_history_sha256'],'manifest':str(manifest),'authorization':str(authorization),'packaging':str(packaging),'packaging_sha256':M.sha(packaging),'verification':str(verification),'owned_receipt':str(receipt),'owned_plan':str(plan),'stop_id':'synthetic-stop'}
   m={'controller':str(controller),'pool_lock':str(pool),'goals':[{'id':out['goal_id'],'root':str(root)}],'state':str(owner_state),'trusted_files':{str(p):M.sha(p) for p in [P,authorization,packaging,verification,receipt,plan,root/'task.txt',root/'trusted/verify.py',root/'supervisor.json',host/'check.py',data/'VERIFIER-CONTRACT.md']}}
+  before=base/'before';before.mkdir();(before/'check.py').write_text((host/'check.py').read_text());(before/'verify.py').write_text((root/'trusted/verify.py').read_text());put(before/'manifest.json',copy.deepcopy(m))
+  for p in before.iterdir():m['trusted_files'][str(p)]=M.sha(p)
   def seal():
    current=M.read(manifest) if manifest.exists() else copy.deepcopy(m);current['trusted_files'].pop(str(proof),None)
    # Test owner pinning is explicit; only inputs already pinned may be rehashed.
@@ -97,4 +99,13 @@ class PermissionResolutionRegression(unittest.TestCase):
    with self.subTest(field=field):
     f=self.fixture();a=M.read(f['authorization']);a['scope'][field]=value;f['put'](f['authorization'],a);f['seal']()
     with self.assertRaisesRegex(ValueError,'Authorization scope'):self.audit(f)
+ def test_packaging_summary_cannot_hide_weakened_acceptance(self):
+  for kind in ['wrapper','goal','empty-kernel']:
+   with self.subTest(kind=kind):
+    f=self.fixture()
+    if kind=='wrapper':(f['root']/'trusted/verify.py').write_text('# weakened verifier')
+    elif kind=='goal':m=M.read(f['manifest']);m['goals'][0]['acceptance']={'required_evidence':[]};f['put'](f['manifest'],m)
+    else:d=M.read(f['verification']);d['checks']['kernel']={};f['put'](f['verification'],d)
+    f['seal']()
+    with self.assertRaises(ValueError):self.audit(f)
 if __name__=='__main__':unittest.main(verbosity=2)
