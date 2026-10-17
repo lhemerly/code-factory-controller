@@ -52,3 +52,17 @@ test('permission rejection remains a blocker and never becomes model failover',a
  const lease=new OwnershipLease(async()=>{});
  await assert.rejects(observeResearch({get:async()=>({}),toolContext:async()=>context,checkpoint:async()=>{},resources:async()=>{},lease,shouldStop:()=>false,sleep:async()=>{}}),error=>!(error instanceof RepeatedToolFailure)&&/Permission denied/.test(error.message));
 });
+
+test('permission rejection survives successful edits and long subsequent tool history',()=>{
+ const denial={type:'tool',name:'shell',state:{status:'error',error:{type:'permission.rejected',message:'Permission denied: external_directory'}}};
+ const after=[{type:'tool',name:'edit',state:{status:'completed'}},...Array.from({length:8},()=>({type:'tool',name:'read',state:{status:'completed'}}))];
+ assert.equal(toolFailureObservation(tools([denial,...after])).permission_denied,true);
+});
+test('permission history is checked before terminal success and between checkpoints',async()=>{
+ const context=tools([{type:'tool',name:'shell',state:{status:'error',error:{type:'permission.rejected'}}}]);
+ for(const terminal of [false,true]){
+  let polls=0,clock=0,saved=0;const lease=new OwnershipLease(async()=>{},{now:()=>clock});
+  await assert.rejects(observeResearch({get:async()=>{polls++;return terminal?{outcome:'succeeded'}:{}},toolContext:async()=>terminal||polls===2?context:[],checkpoint:async()=>saved++,resources:async()=>{},lease,shouldStop:()=>polls>3,sleep:async()=>clock+=2000,now:()=>clock}),/Permission denied/);
+  assert.equal(polls,terminal?1:2);assert.equal(saved,1);
+ }
+});

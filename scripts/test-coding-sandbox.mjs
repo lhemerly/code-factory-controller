@@ -6,7 +6,7 @@ import {sandbox,workerPermissions} from './spark-sandbox.mjs';
 const root=await mkdtemp(resolve(tmpdir(),'coding-sandbox-'));
 try{
  const repo=resolve(root,'repository'),work=resolve(root,'work'),profile=resolve(root,'native'),plugin=resolve(root,'plugin');
- for(const p of [repo,work,profile,plugin,resolve(work,'.opencode/pstack-admission')])await mkdir(p,{recursive:true});
+ for(const p of [repo,resolve(repo,'.git'),work,profile,plugin,resolve(work,'.opencode/pstack-admission')])await mkdir(p,{recursive:true});
  for(const name of ['.git','opencode.json','frozen.py'])await writeFile(resolve(work,name),'frozen');
  await writeFile(resolve(root,'operator-secret'),'outside-boundary');
  const cfg={plugin,native:'/usr/bin/true'};
@@ -45,3 +45,5 @@ print(json.dumps(result))`;
  for(const [name,value] of Object.entries(dataObserved))assert.equal(value,true,name);
  console.log(JSON.stringify({passed:true,evidence:'actual kernel sandbox, no native runtime or model',executed_checks:Object.keys(observed).length+Object.keys(dataObserved).length,checks:{...observed,...dataObserved}},null,2));
 }finally{await rm(root,{recursive:true,force:true})}
+
+await import('./test-worker-namespace.mjs');
