@@ -9,7 +9,7 @@ export function workerPermissions(cfg,work){
  ...(cfg.data==null?[]:[{action:'external_directory',resource:cfg.data,effect:'allow'},{action:'external_directory',resource:cfg.data+'/**',effect:'allow'}])];
 }
 export function sandbox(cfg,repo,work,profile,protectedPaths){
- const args=['--unshare-user','--unshare-pid','--unshare-ipc','--unshare-uts','--new-session','--die-with-parent','--cap-drop','ALL','--ro-bind','/usr','/usr','--ro-bind','/lib','/lib','--ro-bind','/lib64','/lib64','--ro-bind','/etc','/etc','--ro-bind','/run/systemd/resolve','/run/systemd/resolve','--proc','/proc','--dev','/dev','--tmpfs','/tmp'];
+ const args=['--unshare-user','--unshare-pid','--unshare-ipc','--unshare-uts','--new-session','--die-with-parent','--cap-drop','ALL','--ro-bind','/usr','/usr','--symlink','usr/bin','/bin','--ro-bind','/lib','/lib','--ro-bind','/lib64','/lib64','--ro-bind','/etc','/etc','--ro-bind','/run/systemd/resolve','/run/systemd/resolve','--proc','/proc','--dev','/dev','--tmpfs','/tmp'];
  const resources=[cfg.venv,cfg.data].filter(p=>p!==undefined&&p!==null);
  if(resources.some(p=>typeof p!=='string'||!isAbsolute(p)))throw Error('Configured optional resources must be absolute paths');
  // A linked worker needs Git objects/metadata, not the owner's checkout.
