@@ -1,0 +1,5 @@
+{
+  "historical_stop_audit_sha256": "ef80e712355123dcccf14624db32a514a6da3758247eb28aa2b3ddd60c59f0a3",
+  "historical_base_dispatch_sha256": "fadfa20e39d780f17dcc4f6848bcd262419cd8ae1c8f6b8a5a0e6aa970b4088d",
+  "contract": "check.py retains the historical Cases regression body verbatim; its fixture setup is now self-contained with a usable acceptance policy. Historical input files and frozen assertions are unchanged. No generated scripts/host-base-dispatch.py dependency."
+}

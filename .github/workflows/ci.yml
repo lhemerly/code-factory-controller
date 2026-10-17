@@ -25,6 +25,7 @@ jobs:
       - name: Test dashboard synthetic state and read-only HTTP (no private capture)
         run: python3 -m unittest dashboard.tests.test_current_state dashboard.tests.test_fixtures dashboard.tests.test_loader_safety dashboard.tests.test_server dashboard.tests.test_state_root
       - run: python3 scripts/test-research-dispatch.py
+      - run: python3 scripts/test-worker-regression-fixture.py
       - run: python3 scripts/test-dispatch-queue.py
       - run: python3 scripts/test-queue-handoff.py
       - run: python3 scripts/test-github-review.py
