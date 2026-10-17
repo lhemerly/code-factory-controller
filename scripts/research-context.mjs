@@ -163,10 +163,13 @@ export async function buildResearchContext({root,repo,state,goal,cfg,beforeSeque
   const reconciled=await loadReconciledResult({dir,cfg,inspect});
   completed.push(reconciled?{dir,record:reconciled.record,result_sha256:reconciled.result_sha256}:{dir,record,result_sha256:digest(bytes)});
  }
- const latest=completed[0]?.record;
- if(latest&&!latest._not_admitted&&latest.status!=='all_free_unavailable'&&!(latest.status==='accepted'?recoveryAction(latest)==='continue':replacementAllowed(latest)))throw Error('Latest cycle lacks confirmed ownership/cleanup for admission');
+ const latestExecution=completed.find(c=>!c.record._not_admitted);
+ const latest=latestExecution?.record;
+ if(latest&&latest.failure_kind==='blocked')throw Error('Prior native permission/ownership blocker remains unresolved');
+ if(latest&&latest.status!=='all_free_unavailable'&&!(latest.status==='accepted'?recoveryAction(latest)==='continue':replacementAllowed(latest)))throw Error('Latest cycle lacks confirmed ownership/cleanup for admission');
  const latestAccepted=completed.find(c=>c.record.status==='accepted');
  const selected=completed.slice(0,3);
+ if(latestExecution&&!selected.includes(latestExecution))selected.push(latestExecution);
  if(latestAccepted&&!selected.includes(latestAccepted))selected.push(latestAccepted);
  const outcomes=[];const sources=[];let acceptedCommit=null,diagnosticIncluded=false;
  for(const {dir,record,result_sha256} of selected){

@@ -114,6 +114,15 @@ test('saved not-admitted flags cannot bypass independent recovery audit',async t
  await writeFile(join(c.dir,'result.json'),JSON.stringify({...c.record,cleanup_confirmed:false,_not_admitted:{kind:'not_admitted'}}));
  await assert.rejects(buildResearchContext(f.input),/confirmed ownership/);
 });
+test('a later context rejection cannot hide earlier unresolved ownership or native denial',async t=>{
+ for(const kind of ['unknown','permission']){
+  const f=await fixture(t),c=await f.cycle(1,f.first,false);
+  const previous={...c.record,...(kind==='unknown'?{cleanup_confirmed:false}:{failure_kind:'blocked',error:'Permission denied in native tool history'})};await writeFile(join(c.dir,'result.json'),JSON.stringify(previous));
+  await writeFile(join(f.root,'goal.json'),JSON.stringify(f.input.goal));const next=join(f.root,'cycles','000002');await mkdir(next);
+  await writeFile(join(next,'result.json'),JSON.stringify({sequence:2,goal_id:f.input.goal.id,status:'failed',phase:'context_preflight',admission_requested:false,cleanup_confirmed:true,ended_utc:'now',error:'Project instructions exceed admission budget'}));
+  await assert.rejects(buildResearchContext(f.input),/confirmed ownership|blocker remains unresolved/);
+ }
+});
 
 test('budget uses UTF-8 bytes, matching the controller admission contract',async t=>{
  const f=await fixture(t);f.input.goal.objective='界'.repeat(2700);
