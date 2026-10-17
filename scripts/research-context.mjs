@@ -27,6 +27,13 @@ function receiptSummary(status){
    executed:c.observations?.executed??null,failed:c.observations?.failed??null})),
   stop:status.execution_recovery?.execution_stop?.status??null,accounting:status.execution_recovery?.accounting?.status??null};
 }
+export function approvedBaseline(cfg,repo,base){
+ // The approved initial baseline is usable feedback identity only when it names
+ // an exact commit in this repository; otherwise bind to the exact current base.
+ const candidate=cfg&&cfg.initial_base;
+ if(typeof candidate!=='string'||!oid.test(candidate))return base;
+ try{return git(repo,'rev-parse',candidate+'^{commit}')===candidate?candidate:base}catch{return base}
+}
 export async function loadGoalEvaluation(root,goal,commit){
  let bytes;
  try{bytes=await readFile(resolve(root,'goal-evaluation.json'))}catch(e){if(e.code==='ENOENT')return null;throw e}
@@ -105,7 +112,11 @@ export async function buildResearchContext({root,repo,state,goal,cfg,beforeSeque
   .map(line=>{const m=/^\d+ blob ([a-f0-9]{40})\t(.+)$/.exec(line);return m?{path:m[2],blob:m[1]}:null})
   .filter(p=>p&&/continuation|blocked|recovery|plan|research/i.test(p.path));
  const changes=git(repo,'diff-tree','--no-commit-id','--name-only','-r',base).split('\n').filter(Boolean);
- const evaluation=await loadGoalEvaluation(root,goal,acceptedCommit??base);
+ // Independent feedback is bound to the latest accepted milestone. When none is
+ // accepted yet it stays bound to the approved initial baseline, never the
+ // unaccepted repair SHA that advanced state.base past that baseline. A missing
+ // or unusable baseline fails closed onto the exact current base.
+ const evaluation=await loadGoalEvaluation(root,goal,acceptedCommit??approvedBaseline(cfg,repo,base));
  const required=[
   'STANDING GOAL (unresolved; accepted milestones do not establish whole-goal completion):\n'+JSON.stringify(goal),
   'EXACT REPOSITORY BASE: '+base+'\nBASE STATUS: '+(base===acceptedCommit?'independently accepted software milestone':'UNACCEPTED input; repair and independently verify before acceptance'),

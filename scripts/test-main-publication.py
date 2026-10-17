@@ -56,16 +56,13 @@ class Tests(unittest.TestCase):
   self.git('checkout','-q','--detach',self.base);(self.repo/'different').write_text('other');self.git('add','.');self.git('commit','-qm','other');self.remote.head=self.git('rev-parse','HEAD')
   with self.assertRaises(subprocess.CalledProcessError):self.publish()
   self.assertEqual(self.remote.pushes,[])
- def test_missing_or_pending_required_ci_waits_failed_or_skipped_stays_fenced(self):
+ def test_missing_or_pending_pre_main_required_ci_fences_without_push(self):
   self.b['required_checks']=['controller']
-  # Missing and unfinished required checks are an expected wait, never a fence.
-  for checks in [[],[{'name':'controller','status':'pending','conclusion':None}],[{'name':'controller','status':'in_progress','conclusion':None}]]:
+  # Before any main push, missing, unfinished, failed and skipped required
+  # checks are a hard fence: raise and cause no push.
+  for checks in [[],[{'name':'controller','status':'pending','conclusion':None}],[{'name':'controller','status':'in_progress','conclusion':None}],[{'name':'controller','status':'completed','conclusion':'failure'}],[{'name':'controller','status':'completed','conclusion':'skipped'}],[{'name':'controller','status':'completed','conclusion':'neutral'}],[{'name':'other','status':'completed','conclusion':'failure'}]]:
    self.remote.checks=checks
-   result=self.publish();self.assertEqual(result['state'],'awaiting_ci');self.assertEqual(result['ci']['status'],'pending')
-  # Completed failed/skipped/neutral required checks and any non-required failure stay fenced.
-  for checks in [[{'name':'controller','status':'completed','conclusion':'failure'}],[{'name':'controller','status':'completed','conclusion':'skipped'}],[{'name':'controller','status':'completed','conclusion':'neutral'}],[{'name':'other','status':'completed','conclusion':'failure'}]]:
-   self.remote.checks=checks
-   with self.assertRaisesRegex(ValueError,'CI failed'):self.publish()
+   with self.assertRaises(ValueError):self.publish()
   self.assertEqual(self.remote.pushes,[])
   self.remote.checks=[{'name':'controller','status':'completed','conclusion':'success'}];self.assertEqual(self.publish()['state'],'confirmed')
   self.assertEqual(self.remote.pushes,[self.commit])

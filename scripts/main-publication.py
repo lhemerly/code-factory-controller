@@ -35,6 +35,18 @@ def ci_state(b,checks):
  state='failed' if failed else 'pending' if pending else 'passed' if checks else 'not_configured'
  return state,{'status':state,'checks':checks}
 
+def checked_ci(b,s):
+ # Strict exact-head gate before any main push. Missing, unfinished or failed
+ # required checks must fence the push; only a green inventory may proceed.
+ checks=s['checks'];required=b['required_checks']
+ if not isinstance(required,list) or not all(isinstance(x,str) and x for x in required):raise ValueError('Explicit required_checks policy missing')
+ if len(checks)>100:raise ValueError('CI inventory exceeds bound')
+ if any(c.get('status')!='completed' or c.get('conclusion') not in ['success','neutral','skipped'] for c in checks):raise ValueError('Remote CI pending or failed')
+ for name in required:
+  matches=[c for c in checks if c['name']==name]
+  if not matches or any(c.get('conclusion')!='success' for c in matches):raise ValueError('Required exact-head CI not passed: '+name)
+ return {'status':'passed' if checks else 'not_configured','checks':checks}
+
 class GitHub:
  def api(self,path):return json.loads(run(['gh','api','--hostname','github.com',path]).stdout)
  def snapshot(self,b,commit=None):
@@ -174,10 +186,10 @@ class Publisher:
    previous=observed['head']
    git(repo,'merge-base','--is-ancestor',previous,commit)
   diff=self.content(b,repo,previous,commit)
-  state,ci=ci_state(b,observed['checks'])
-  if state=='failed':raise ValueError('Remote CI failed')
-  if state=='pending':return self.await_ci(commit,receipt,ci)
   if observed['head']!=commit:
+   # Strict pre-push gate: observed CI on the current main must be green before
+   # any main effect. Missing/unfinished/failed checks fence here with no push.
+   ci=checked_ci(b,observed)
    intent={'state':'push_intent','commit':commit,'previous_head':previous,'receipt':receipt,'diff_sha256':diff,'ci_before':ci};s={'binding':b,'history':(old or {}).get('history',[]),'intent':intent};self.save(s)
    try:self.remote.push(b,repo,commit)
    except Exception:intent['state']='uncertain';self.save(s);raise
@@ -187,6 +199,8 @@ class Publisher:
   after=self.remote.snapshot(b,commit);identity(b,after)
   if after['head']!=commit or after.get('checked_commit')!=commit:raise ValueError('Main update not observed; intent retained')
   intent.update(state='remote_observed',ci_observation={'commit':commit,'checks':after['checks']});s['intent']=intent;self.save(s)
+  # Post-main CI is an expected wait after observing the exact retained intent;
+  # failed checks stay fenced and never become acceptance.
   state,ci=ci_state(b,after['checks'])
   if state=='failed':raise ValueError('Remote CI failed')
   if state=='pending':return self.await_ci(commit,receipt,ci)

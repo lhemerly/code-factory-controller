@@ -135,6 +135,35 @@ async function evaluation(f,overrides={}){
  const record={version:1,goal_id:f.input.goal.id,commit:f.first,result:{passed:false,status:'acceptance_failed',commit:f.first,phase:'check_evidence',reason:'command failed',receipts:[receipt]},...overrides};
  await writeFile(join(f.root,'goal-evaluation.json'),JSON.stringify(record));return {record,receipt};
 }
+async function failedCandidate(t){
+ // Approved initial baseline was evaluated; a repair cycle then failed and its
+ // candidate SHA advanced state.base without any accepted milestone.
+ const f=await fixture(t);f.input.cfg.initial_base=f.first;await evaluation(f);await f.cycle(1,f.second,false);f.input.state.base=f.second;return f;
+}
+test('failed candidate retains approved baseline feedback without claiming acceptance',async t=>{
+ const f=await failedCandidate(t);const context=await buildResearchContext(f.input);
+ assert.match(context.text,new RegExp('EXACT REPOSITORY BASE: '+f.second));assert.match(context.text,/UNACCEPTED input/);
+ assert.match(context.text,new RegExp('"commit":"'+f.first+'"'));assert.match(context.text,/Unicode normalization still missing/);
+ assert.equal(context.provenance.goal_evaluation_sha256.length,64);
+ const restarted=await buildResearchContext({...f.input,state:{base:f.second}});assert.equal(restarted.text,context.text);
+});
+test('baseline fallback rejects a foreign goal evaluation',async t=>{
+ const f=await failedCandidate(t);await evaluation(f,{goal_id:'foreign-goal'});
+ await assert.rejects(buildResearchContext(f.input),/identity\/result mismatch/);
+});
+test('baseline diagnostics stay digest checked after a failed candidate',async t=>{
+ const f=await failedCandidate(t);const {receipt}=await evaluation(f);await writeFile(receipt.stderr,'forged');
+ await assert.rejects(buildResearchContext(f.input),/log changed/);
+});
+test('baseline fallback cannot supersede a later accepted milestone',async t=>{
+ const f=await fixture(t);f.input.cfg.initial_base=f.first;await evaluation(f);await f.cycle(1,f.second,true);f.input.state.base=f.second;
+ await assert.rejects(buildResearchContext(f.input),/identity\/result mismatch/);
+});
+test('baseline fallback preserves receipt-commit validation',async t=>{
+ const f=await failedCandidate(t);const {record}=await evaluation(f);record.result.receipts[0].commit=f.second;
+ await writeFile(join(f.root,'goal-evaluation.json'),JSON.stringify(record));
+ await assert.rejects(buildResearchContext(f.input),/receipt commit mismatch/);
+});
 test('independent goal failure reaches the next task after restart, distinct from passing cycle tests',async t=>{
  const f=await fixture(t);await f.cycle(1,f.first);await evaluation(f);
  const a=await buildResearchContext(f.input),b=await buildResearchContext({...f.input,state:{base:f.first}});
