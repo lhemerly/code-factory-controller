@@ -453,6 +453,30 @@ pub fn validate_update(plan: &Value) -> Result<()> {
     Ok(())
 }
 pub fn restore(queue: &Queue, journal: &Value) -> Result<()> {
+    // Old Python journals omitted mode. Never declare recovery complete after
+    // restoring an executable with an unknowable non-executable default mode.
+    for entry in list(journal, "backups")? {
+        if let Some(mode) = entry.get("mode").filter(|m| !m.is_null()) {
+            ensure!(
+                mode.as_u64().is_some_and(|m| m <= 0o777),
+                "invalid rollback mode; retain journal"
+            );
+        }
+        if entry["mode"].is_null()
+            && (!entry["bytes"].is_null() || entry["backup_path"].is_string())
+            && let Some(controller) = journal["manifest"]["controller"].as_str()
+            && resolve(&path(entry, "path")?)? == resolve(Path::new(controller))?
+        {
+            let metadata = fs::symlink_metadata(path(entry, "path")?)
+                .context("legacy rollback lacks prior executable mode; retain journal")?;
+            ensure!(
+                metadata.is_file()
+                    && !metadata.file_type().is_symlink()
+                    && metadata.mode() & 0o100 != 0,
+                "legacy rollback lacks prior executable mode; retain journal"
+            );
+        }
+    }
     for entry in list(journal, "backups")? {
         let p = path(entry, "path")?;
         if let Some(backup) = entry["backup_path"].as_str() {

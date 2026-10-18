@@ -493,36 +493,29 @@ fn supervised_check_mode(
     Ok(None)
 }
 fn setup_command(
-    argv: &[&str],
-    cwd: Option<&Path>,
+    executable: &Path,
+    plan: &crate::supervisor::Plan,
+    stage: &str,
     env: &BTreeMap<String, String>,
-    stdout: &Path,
-    stderr: &Path,
+    receipt: &mut Value,
 ) -> Result<i32> {
-    let mut command = Command::new(argv[0]);
-    command
-        .args(&argv[1..])
-        .env_clear()
-        .envs(env)
-        .stdout(File::create(stdout)?)
-        .stderr(File::create(stderr)?)
-        .stdin(Stdio::null());
-    if let Some(cwd) = cwd {
-        command.current_dir(cwd);
-    }
-    let mut child = command.spawn()?;
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        if let Some(status) = child.try_wait()? {
-            return Ok(status.code().unwrap_or(-1));
+    let stdout = plan.stdout.as_ref().context("setup stdout required")?;
+    let failure = supervised_check(
+        executable,
+        plan,
+        &stdout.with_extension("plan.json"),
+        &env["PATH"],
+        receipt,
+    )?;
+    if let Some(reason) = failure {
+        if reason == "timeout" {
+            bail!("acceptance {stage} timeout");
         }
-        if Instant::now() >= deadline {
-            child.kill()?;
-            child.wait()?;
-            bail!("acceptance setup timeout");
+        if receipt["exit_status"].as_i64().is_none() || receipt["exit_status"].as_i64() == Some(0) {
+            bail!("acceptance {stage} failed ({reason}); inspect retained setup logs");
         }
-        std::thread::sleep(Duration::from_millis(10));
     }
+    Ok(receipt["exit_status"].as_i64().unwrap_or(-1) as i32)
 }
 /// Always returns a durable-result-shaped value, including partial receipts.
 pub fn run_acceptance(m: &Value, state: &Path, commit: &str, default_verifier: &Path) -> Value {
@@ -554,6 +547,13 @@ pub fn run_acceptance(m: &Value, state: &Path, commit: &str, default_verifier: &
             "absolute repository and exact commit required"
         );
         let env = environment(m, commit)?;
+        let executable = m
+            .get("verifier_executable")
+            .filter(|v| !v.is_null())
+            .map(|v| v.as_str().context("invalid verifier executable"))
+            .transpose()?
+            .map(Path::new)
+            .unwrap_or(default_verifier);
         phase = "setup";
         let output = PathBuf::from(format!("{}.acceptance", state.display()))
             .join(uuid::Uuid::new_v4().simple().to_string());
@@ -594,20 +594,24 @@ pub fn run_acceptance(m: &Value, state: &Path, commit: &str, default_verifier: &
             let stdout = output.join(format!("{stage}.stdout"));
             let stderr = output.join(format!("{stage}.stderr"));
             setup.push(json!({"stage":stage,"stdout":stdout,"stderr":stderr,"exit_status":null}));
-            let status = setup_command(&argv, cwd, &env, &stdout, &stderr)?;
-            setup.last_mut().unwrap()["exit_status"] = json!(status);
+            let setup_receipt = setup.last_mut().unwrap();
+            let plan = crate::supervisor::Plan {
+                execution_id: uuid::Uuid::new_v4().simple().to_string(),
+                argv: command_argv(&json!(argv), &env)?,
+                cwd: cwd.unwrap_or(&output).to_path_buf(),
+                log: stderr,
+                stdout: Some(stdout.clone()),
+                commit: commit.into(),
+                seconds: 60,
+                receipt: stdout.with_extension("process.json"),
+            };
+            let status = setup_command(executable, &plan, stage, &env, setup_receipt)?;
+            setup_receipt["exit_status"] = json!(status);
             ensure!(
                 status == 0,
                 "acceptance {stage} failed; inspect retained setup logs"
             );
         }
-        let executable = m
-            .get("verifier_executable")
-            .filter(|v| !v.is_null())
-            .map(|v| v.as_str().context("invalid verifier executable"))
-            .transpose()?
-            .map(Path::new)
-            .unwrap_or(default_verifier);
         for (index, check) in array(m, "completion_checks")?.iter().enumerate() {
             let stdout = output.join(format!("{index}.stdout"));
             let stderr = output.join(format!("{index}.stderr"));

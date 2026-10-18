@@ -31,18 +31,32 @@ impl GitHub {
 }
 impl ReviewRemote for GitHub {
     fn snapshot(&mut self, b: &Value) -> Result<Value> {
+        const MAX_SNAPSHOT_BYTES: usize = 32 * 1024 * 1024;
         let script = runtime_script("pstack-github-read.mjs")?;
-        let out = self.command(
+        let dir = crate::main_publication::create_private_diff_dir()?;
+        let output = dir.join("review-snapshot.json");
+        self.command(
             &self.node,
             &[
                 "--experimental-strip-types",
                 script.to_str().context("UTF-8 runtime path required")?,
                 string(b, "repository")?,
                 &b["pr"].to_string(),
+                output.to_str().context("UTF-8 snapshot path required")?,
             ],
             script.parent().context("script parent required")?,
-        )?;
-        Ok(serde_json::from_slice(&out)?)
+        )
+        .with_context(|| format!("review snapshot retained at {}", dir.display()))?;
+        let bytes = crate::main_publication::read_bounded_nofollow(&output, MAX_SNAPSHOT_BYTES)?;
+        ensure!(
+            bytes.len() <= MAX_SNAPSHOT_BYTES,
+            "Review snapshot exceeds 32MiB transport bound"
+        );
+        let snapshot = serde_json::from_slice(&bytes)
+            .context("invalid private review snapshot; artifact retained")?;
+        fs::remove_file(&output)?;
+        fs::remove_dir(&dir)?;
+        Ok(snapshot)
     }
     fn push(&mut self, b: &Value, repo: &Path, commit: &str) -> Result<()> {
         self.command(

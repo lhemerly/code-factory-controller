@@ -637,7 +637,7 @@ impl PublicationRemote for GitHub {
     }
 }
 
-fn create_private_diff_dir() -> Result<PathBuf> {
+pub(crate) fn create_private_diff_dir() -> Result<PathBuf> {
     let base = std::env::temp_dir();
     let execution_id = uuid::Uuid::new_v4().simple().to_string();
     let dir = base.join(format!(
@@ -658,7 +658,7 @@ fn create_private_diff_dir() -> Result<PathBuf> {
     resolve(&dir)
 }
 
-fn read_bounded_nofollow(path: &Path, max_bytes: usize) -> Result<Vec<u8>> {
+pub(crate) fn read_bounded_nofollow(path: &Path, max_bytes: usize) -> Result<Vec<u8>> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
