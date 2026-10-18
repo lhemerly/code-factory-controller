@@ -747,7 +747,10 @@ impl Dispatcher {
         };
         let out = read(Path::new(p))?;
         if out["status"] != "failed"
-            || !matches!(out["phase"].as_str(), Some("native" | "native_shells"))
+            || !matches!(
+                out["phase"].as_str(),
+                Some("native" | "native_shells" | "native_completion" | "native_sealing")
+            )
         {
             return Ok(false);
         }
@@ -777,10 +780,10 @@ impl Dispatcher {
         let helper = PathBuf::from(helpers[0]);
         ensure!(
             out["cleanup_confirmed"] == true
-                && matches!(
+                && (matches!(
                     out["failure_kind"].as_str(),
                     Some("transient" | "unavailable")
-                )
+                ) || (out["phase"] == "native_sealing" && out["failure_kind"] == "repair"))
                 && !root(g)?.join("PAUSE").exists()
                 && !status["pause_reason"]
                     .as_str()
@@ -1071,6 +1074,7 @@ impl Dispatcher {
         Ok(true)
     }
 }
+
 fn passed(result: &Value, commit: &str) -> bool {
     result["passed"] == true
         && result["status"] == "passed"
