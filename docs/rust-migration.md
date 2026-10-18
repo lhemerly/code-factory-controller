@@ -1,12 +1,13 @@
 # Rust runtime migration checkpoint
 
 This is a **partial, locally verified migration**, not the completed autonomous
-Code Factory objective. The controller now offers a Python-independent approved
-backlog runner and whole-goal acceptance/audit engine. The existing queue,
-publication, recovery, installer and dashboard paths still require Python.
-Their cutover is deliberately not implied by passing this checkpoint.
+Code Factory objective. The controller offers native approved-backlog,
+whole-goal acceptance, recovery, utility and publication commands. Existing
+queue, dispatcher, installer and dashboard paths still require Python, and
+legacy callers remain in place. Passing a replacement's checks does not activate
+it or complete caller cutover.
 
-## Baseline and authority
+## Initial cloud baseline and authority
 
 The cloud checkout started clean on local branch `work`, at
 `1899b9d87df399709d449a4ad9ccd15f55e76fa5`. A read-only `git ls-remote origin
@@ -223,3 +224,24 @@ These local fixtures do not establish current-provider or activated-runtime
 qualification.
 
 Additional native CLI controls cover pre-admission receipt re-audit, failure preservation, explicit pauses, live owner locks, nonempty ledgers and exact-byte journal rollback. Trace controls exercise concurrent imports under real SQLite write contention and an injected mid-batch failure followed by a clean retry.
+
+## Native publication checkpoint
+
+`src/main_publication.rs` implements the existing private-main publisher in Rust.
+`src/delivery_audit.rs` extracts the shared cycle/receipt audit for later reuse by
+the dispatcher and GitHub review ports. Legacy production entrypoints and their
+callers remain unchanged; those integrations and runtime activation are pending.
+
+The publisher preserves exact destination and receipt bindings, whole-goal audit,
+bounded patch scanning, exact-commit preflight and branch-specific main CI,
+durable push intents, and restart reconciliation without a blind second push.
+Controller, Git and GitHub subprocesses reuse the existing ownership supervisor.
+An explicit owner mode forwards existing authentication through child environment
+variables; default verifier and worker modes retain their prior behavior.
+
+`cargo test --locked --test main_publication` covers the 326 frozen Python policy
+cases, real local controller delivery and tamper checks, synthetic remote failure
+and CI transitions, 1.5 MB patch admission and the 2 MB bound, owner/verifier auth
+isolation, output limits, timeouts and descendant cleanup. The references and
+synthetic inputs contain no live runtime state. These tests and static review do
+not prove current-provider execution or activate a live publication loop.

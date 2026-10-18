@@ -113,7 +113,9 @@
     {
       "path": "scripts/main-publication.py",
       "role": "production",
-      "migration_status": "pending"
+      "migration_status": "native_replacement_tested_legacy_entrypoint_retained",
+      "rust": "src/main_publication.rs",
+      "shared_native_audit": "src/delivery_audit.rs"
     },
     {
       "path": "scripts/owner-interruption.py",

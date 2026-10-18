@@ -29,6 +29,20 @@ enum Command {
         #[arg(long)]
         plan: PathBuf,
     },
+    #[command(hide = true)]
+    OwnerSupervisor {
+        #[arg(long)]
+        plan: PathBuf,
+    },
+    /// Finite owner-side publication of accepted Factory deliveries.
+    MainPublication {
+        #[arg(long)]
+        state: PathBuf,
+        #[arg(long)]
+        binding: PathBuf,
+        #[arg(long)]
+        goal: PathBuf,
+    },
     /// Submit approved work and watch jobs, verification and delivery.
     Tui {
         #[arg(long, default_value = "http://127.0.0.1:4317")]
@@ -176,6 +190,9 @@ fn main() -> Result<()> {
     if let Command::VerifierSupervisor { plan } = &cli.command {
         return code_factory_controller::supervisor::run(plan);
     }
+    if let Command::OwnerSupervisor { plan } = &cli.command {
+        return code_factory_controller::supervisor::run_owner(plan);
+    }
     if let Command::GoalAcceptance = &cli.command {
         use std::io::Read;
         let mut input = Vec::new();
@@ -204,6 +221,19 @@ async fn run(cli: Cli) -> Result<()> {
         Command::GoalAcceptance => unreachable!("handled before runtime initialization"),
         Command::AgySupervisor { .. } => unreachable!("handled before runtime initialization"),
         Command::VerifierSupervisor { .. } => unreachable!("handled before runtime initialization"),
+        Command::OwnerSupervisor { .. } => unreachable!("handled before runtime initialization"),
+        Command::MainPublication {
+            state,
+            binding,
+            goal,
+        } => {
+            let out = code_factory_controller::main_publication::run_cli(&state, &binding, &goal)?;
+            let raw = code_factory_controller::goal_state::RawJson::from_value(&out);
+            print!(
+                "{}",
+                code_factory_controller::goal_state::raw_json_pretty(&raw)
+            );
+        }
         Command::Tui {
             url,
             goal_state,

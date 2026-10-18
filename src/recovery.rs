@@ -58,6 +58,45 @@ pub fn supervised_command(
     timeout_secs: u64,
     expected_exit: i64,
 ) -> Result<SupervisedCommandResult> {
+    supervised_command_mode(
+        supervisor_executable,
+        cmd_name,
+        args,
+        cwd,
+        timeout_secs,
+        expected_exit,
+        false,
+    )
+}
+
+pub fn supervised_owner_command(
+    supervisor_executable: &Path,
+    cmd_name: &Path,
+    args: &[&str],
+    cwd: &Path,
+    timeout_secs: u64,
+    expected_exit: i64,
+) -> Result<SupervisedCommandResult> {
+    supervised_command_mode(
+        supervisor_executable,
+        cmd_name,
+        args,
+        cwd,
+        timeout_secs,
+        expected_exit,
+        true,
+    )
+}
+
+fn supervised_command_mode(
+    supervisor_executable: &Path,
+    cmd_name: &Path,
+    args: &[&str],
+    cwd: &Path,
+    timeout_secs: u64,
+    expected_exit: i64,
+    owner: bool,
+) -> Result<SupervisedCommandResult> {
     let supervisor_executable = resolve(supervisor_executable)?;
     let cwd = resolve(cwd)?;
     let evidence_dir = create_private_evidence_dir()?;
@@ -86,13 +125,23 @@ pub fn supervised_command(
 
     let search_path = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into());
     let mut check_receipt = json!({});
-    let failure = crate::goal_acceptance::supervised_check(
-        &supervisor_executable,
-        &plan,
-        &plan_path,
-        &search_path,
-        &mut check_receipt,
-    )
+    let failure = if owner {
+        crate::goal_acceptance::supervised_owner_check(
+            &supervisor_executable,
+            &plan,
+            &plan_path,
+            &search_path,
+            &mut check_receipt,
+        )
+    } else {
+        crate::goal_acceptance::supervised_check(
+            &supervisor_executable,
+            &plan,
+            &plan_path,
+            &search_path,
+            &mut check_receipt,
+        )
+    }
     .with_context(|| {
         format!(
             "supervised command unresolved (retained at {})",

@@ -379,6 +379,27 @@ pub fn supervised_check(
     search_path: &str,
     receipt: &mut Value,
 ) -> Result<Option<String>> {
+    supervised_check_mode(executable, plan, path, search_path, receipt, false)
+}
+
+pub fn supervised_owner_check(
+    executable: &Path,
+    plan: &crate::supervisor::Plan,
+    path: &Path,
+    search_path: &str,
+    receipt: &mut Value,
+) -> Result<Option<String>> {
+    supervised_check_mode(executable, plan, path, search_path, receipt, true)
+}
+
+fn supervised_check_mode(
+    executable: &Path,
+    plan: &crate::supervisor::Plan,
+    path: &Path,
+    search_path: &str,
+    receipt: &mut Value,
+    owner: bool,
+) -> Result<Option<String>> {
     ensure!(
         executable.is_absolute(),
         "absolute trusted verifier executable required"
@@ -386,11 +407,37 @@ pub fn supervised_check(
     crate::supervisor::write_json(path, plan)?;
     receipt["process_receipt"] = json!(plan.receipt);
     let diagnostic = File::create(path.with_extension("supervisor.stderr"))?;
-    let mut child = Command::new(executable)
-        .args(["verifier-supervisor", "--plan"])
+    let mut command = Command::new(executable);
+    command
+        .args([
+            if owner {
+                "owner-supervisor"
+            } else {
+                "verifier-supervisor"
+            },
+            "--plan",
+        ])
         .arg(path)
         .env_clear()
-        .env("PATH", search_path)
+        .env("PATH", search_path);
+    if owner {
+        for key in [
+            "HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_STATE_HOME",
+            "GH_CONFIG_DIR",
+            "SSH_AUTH_SOCK",
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+        ] {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
+    }
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(diagnostic)

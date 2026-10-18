@@ -311,6 +311,13 @@ impl Drop for OwnedExecution {
         }
     }
 }
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Verifier,
+    Worker,
+    Owner,
+}
 /// Must run in the dedicated single-threaded helper before creating a Tokio runtime.
 #[cfg(target_os = "linux")]
 pub fn run(path: &Path) -> Result<()> {
@@ -318,19 +325,25 @@ pub fn run(path: &Path) -> Result<()> {
 }
 #[cfg(target_os = "linux")]
 fn run_with_control(path: &Path, control: &mut impl FnMut() -> Result<bool>) -> Result<()> {
-    run_with_environment(path, control, false)
+    run_with_environment(path, control, Mode::Verifier)
 }
 /// Worker-only profile inheritance. Verifier defaults remain unchanged.
 #[cfg(target_os = "linux")]
 pub fn run_worker(path: &Path) -> Result<()> {
-    run_with_environment(path, &mut control_closed, true)
+    run_with_environment(path, &mut control_closed, Mode::Worker)
+}
+/// Explicit owner-authenticated operational helper for git/gh commands.
+#[cfg(target_os = "linux")]
+pub fn run_owner(path: &Path) -> Result<()> {
+    run_with_environment(path, &mut control_closed, Mode::Owner)
 }
 #[cfg(target_os = "linux")]
 fn run_with_environment(
     path: &Path,
     control: &mut impl FnMut() -> Result<bool>,
-    worker: bool,
+    mode: Mode,
 ) -> Result<()> {
+    let worker = mode == Mode::Worker;
     let plan: Plan = read_json(path)?;
     if !crate::model::valid_id(&plan.execution_id)
         || plan.argv.is_empty()
@@ -428,6 +441,25 @@ fn run_with_environment(
             }
         }
         command.env("AGY_CLI_HIDE_ACCOUNT_INFO", "1");
+    } else if mode == Mode::Owner {
+        command.env_remove("FACTORY_VERIFICATION_COMMIT");
+        for key in [
+            "HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_STATE_HOME",
+            "GH_CONFIG_DIR",
+            "SSH_AUTH_SOCK",
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+        ] {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
+        command.env("GIT_TERMINAL_PROMPT", "0");
+        command.env("GH_PROMPT_DISABLED", "1");
     }
     let spawned = command
         .stdin(Stdio::null())
@@ -547,6 +579,10 @@ pub fn run_worker(_: &Path) -> Result<()> {
     bail!("agy ownership requires Linux");
 }
 #[cfg(not(target_os = "linux"))]
+pub fn run_owner(_: &Path) -> Result<()> {
+    bail!("owner operational supervision requires Linux");
+}
+#[cfg(not(target_os = "linux"))]
 pub fn run(_: &Path) -> Result<()> {
     bail!("owned-process verification requires Linux subreaper and pidfds");
 }
@@ -570,13 +606,15 @@ mod tests {
         };
         let path = temp.path().join("plan.json");
         write_json(&path, &plan).unwrap();
-        assert!(run_with_environment(&path, &mut || Ok(false), false).is_err());
+        assert!(run_with_environment(&path, &mut || Ok(false), Mode::Verifier).is_err());
+        assert!(run_with_environment(&path, &mut || Ok(false), Mode::Owner).is_err());
         plan.seconds = 0;
         write_json(&path, &plan).unwrap();
-        assert!(run_with_environment(&path, &mut || Ok(false), false).is_err());
+        assert!(run_with_environment(&path, &mut || Ok(false), Mode::Verifier).is_err());
+        assert!(run_with_environment(&path, &mut || Ok(false), Mode::Owner).is_err());
         plan.seconds = MAX_WORKER_SECONDS + 1;
         write_json(&path, &plan).unwrap();
-        assert!(run_with_environment(&path, &mut || Ok(false), true).is_err());
+        assert!(run_with_environment(&path, &mut || Ok(false), Mode::Worker).is_err());
         assert!(!plan.receipt.exists());
     }
 

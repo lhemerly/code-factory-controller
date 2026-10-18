@@ -95,3 +95,29 @@ CI preflight and publication. Operator preparation/verification does not itself
 publish. These additions remain unactivated until a complete binding and the
 Factory workflow action receive the required approval. Local fake-GitHub tests
 are not evidence of a live GitHub push or CI run.
+
+## Native implementation
+
+After building the controller, the equivalent finite owner command is:
+
+```sh
+./target/debug/code-factory-controller main-publication \
+  --state /owner/publication-state --binding /owner/config.json \
+  --goal /owner/registered-goal-entry.json
+```
+
+Use it only at the approved pool/goal ownership boundary. The Rust implementation
+reads the existing binding and publication state formats and retains the same
+acceptance and CI gates. Existing Python callers remain in place until a separate
+qualified cutover; building this command does not change a running dispatcher.
+
+Every operational subprocess reuses the existing Linux ownership supervisor.
+Remote Git and GitHub commands select an explicit owner environment with existing
+auth/config paths and noninteractive prompts. Ordinary verifier mode does not
+inherit owner authentication. Credential values are passed through child
+environment variables rather than publication plans or arguments.
+
+`cargo test --locked --test main_publication` exercises 326 frozen policy cases,
+real local controller receipts, synthetic remote uncertainty and CI transitions,
+bounded patch scanning, auth isolation and process failures. Model and GitHub
+effects in those tests are fixtures, not a live autonomous publication proof.
