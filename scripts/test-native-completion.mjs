@@ -57,10 +57,16 @@ test('quiet confirmation preserves terminal failure policy and sticky permission
   history[0].content[0].state.error={type:'permission.denied',message:'Permission denied'};
   await assert.rejects(awaitNativeCompletion(f.options),/Permission denied/);
 });
+test('resumed active work cannot hide tool failures behind a cached success',async()=>{
+  const f=fixture(),saved=[];f.options.checkpoint=async observation=>saved.push(observation);
+  f.options.toolContext=async()=>[{type:'assistant',content:Array.from({length:4},()=>({type:'tool',name:'read',state:{status:'error',error:{type:'tool.execution'}}}))}];
+  await assert.rejects(awaitNativeCompletion(f.options),/Repeated native tool failures/);
+  assert.equal(saved[0].active,true);assert.equal(saved[0].session.outcome,'succeeded');
+});
 test('sealing auth and policy denials never become transport repair or quota fallback',()=>{
-  for(const text of ['Controller seal-v2 HTTP 401: unauthorized','Controller seal-v2 HTTP 403: forbidden timeout','HTTP status client error (401 Unauthorized)'])assert.equal(classifyNativeFailure(text,'native_sealing'),'denied');
+  for(const text of ['Controller seal-v2 HTTP 401: unauthorized','Controller seal-v2 HTTP 403: forbidden timeout','HTTP status client error (401 Unauthorized)','HTTP 401: V2 observation deadline exceeded'])assert.equal(classifyNativeFailure(text,'native_sealing'),'denied');
   for(const text of ['Permission denied','ownership changed','V2 accounting requires settlement: unknown','Native completion changed after admission fence'])assert.equal(classifyNativeFailure(text,'native_sealing'),'blocked');
-  for(const text of ['TypeError: fetch failed','Connection refused','Controller seal-v2 HTTP 503','Completion seal timed out'])assert.equal(classifyNativeFailure(text,'native_sealing'),'repair');
+  for(const text of ['TypeError: fetch failed','Connection refused','Controller seal-v2 HTTP 503','Completion seal timed out','Controller seal-v2 HTTP 409: V2 observation deadline exceeded'])assert.equal(classifyNativeFailure(text,'native_sealing'),'repair');
 });
 test('actual host seal transport outlasts two bounded observations; ordinary calls retain their budget',async()=>{
   const source=await readFile(new URL('./spark-continuous.mjs',import.meta.url),'utf8');

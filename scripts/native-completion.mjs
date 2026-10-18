@@ -7,7 +7,7 @@ export function classifyNativeFailure(text,phase) {
   if(guarded==='denied'||/permission.?denied|scope violation|ownership.*(?:changed|unknown)/i.test(text))return guarded;
   // Only a qualified local control transport failure authorizes stop recovery.
   // A denial, pricing/accounting uncertainty or schema error never does.
-  if(/timeout|timed.out|ECONN|Connection refused|fetch failed|HTTP 50[234]/i.test(text))return 'repair';
+  if(/timeout|timed.out|V2 observation deadline exceeded|ECONN|Connection refused|fetch failed|HTTP 50[234]/i.test(text))return 'repair';
   return 'blocked';
 }
 export async function awaitNativeCompletion({sessionID,worktree,getSession,getActive,getInbox,getShells,checkpoint,...controls}) {
@@ -22,11 +22,14 @@ export async function awaitNativeCompletion({sessionID,worktree,getSession,getAc
     observation={session,active:Object.hasOwn(active,sessionID),inbox_count:inbox.length,shells,quiet};
     confirmed=quiet&&previous===session.time.updated&&Boolean(session.outcome);
     previous=quiet?session.time.updated:undefined;
-    return session; // Preserve real terminal status for the existing error policy.
+    // The outcome is cached across automatic continuation. Only actual active
+    // execution is nonterminal for failure policy; a quiet first confirmation
+    // retains terminal semantics. The checkpoint keeps the original observation.
+    return observation.active?{...session,outcome:undefined}:session;
   };
   while(!controls.shouldStop()) {
     const session=await observeResearch({...controls,get,
-      checkpoint:async session=>{if(now()-saved>=15000){await checkpoint({...observation,session});saved=now()}},
+      checkpoint:async()=>{if(now()-saved>=15000){await checkpoint(observation);saved=now()}},
       resources:async()=>{if(now()-checked>=60000){await controls.resources();checked=now()}}});
     if(confirmed)return session;
     await controls.sleep(2000);
