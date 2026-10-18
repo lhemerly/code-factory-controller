@@ -178,3 +178,48 @@ publisher, then confirm main-branch CI on the same commit. The API `Forbidden`
 response must be resolved by authorized environment setup; Codex must not invent
 credentials, substitute a different remote or manually publish on Factory's behalf.
 No push was attempted here, so publication is pending with no uncertain push.
+
+## Native recovery and utilities checkpoint
+
+A subsequent local checkpoint implements `permission-block-resolution`,
+`owner-interruption`, `pre-admission-recovery`, `spark-control`, `check-bonsai` and
+`trace-ledger` in Rust. Legacy production entrypoints and their callers remain
+in place. This adds tested replacements; full production Python independence and
+runtime activation remain pending.
+
+Recovery subprocesses reuse the existing Linux supervisor and its kernel
+receipts. The replacement requires the actual native executable pin, preserves
+failed attempts and unknown accounting, and refuses unresolved process effects.
+Ordered JSON storage preserves Python policy hashes and exact rollback bytes.
+Bonsai preflight remains loopback-only with bounded responses and no redirects.
+The trace ledger preserves persisted observation hashes, including the distinction
+between integer and floating-point reported costs.
+
+`cargo test --locked --test recovery_parity` covers native recovery, real
+subprocess timeout/descendant cleanup, lock/pin controls, repeated scope advances
+and rollback, HTTP bounds and ledger contracts. After `cargo build --locked`,
+CI also runs these independent legacy-fixture adapters against the built CLI:
+
+```sh
+python3 scripts/test-rust-permission-resolution.py
+python3 scripts/test-rust-owner-interruption.py
+python3 scripts/test-rust-scope-recovery.py
+python3 scripts/test-rust-spark-control.py
+python3 scripts/test-rust-check-bonsai.py
+python3 scripts/test-rust-trace-ledger.py
+python3 scripts/test-rust-pre-admission.py
+python3 scripts/test-rust-trace-contention.py
+```
+
+The adapters retain the original assertions and fixtures. Native resolver tests
+add the native executable pin to valid fixtures and reject missing/incorrect pins.
+A metadata-bound cache only avoids rehashing that immutable artifact in the
+Python fixture producer; the Rust auditor still hashes its executable on each
+audit. The adapters exclude legacy-only JS context and dispatcher resume tests
+from native evidence. The scope suite first verifies its ordered/float-containing
+inputs on Python, then repeats the assertions through Rust. Ledger checks replay
+Python-created databases with Rust and Rust-created databases with Python.
+These local fixtures do not establish current-provider or activated-runtime
+qualification.
+
+Additional native CLI controls cover pre-admission receipt re-audit, failure preservation, explicit pauses, live owner locks, nonempty ledgers and exact-byte journal rollback. Trace controls exercise concurrent imports under real SQLite write contention and an injected mid-batch failure followed by a clean retry.

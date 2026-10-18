@@ -75,7 +75,8 @@
     {
       "path": "scripts/check-bonsai.py",
       "role": "production",
-      "migration_status": "pending"
+      "migration_status": "native_replacement_tested_legacy_entrypoint_retained",
+      "rust": "src/check_bonsai.rs"
     },
     {
       "path": "scripts/code-factory.py",
@@ -117,17 +118,20 @@
     {
       "path": "scripts/owner-interruption.py",
       "role": "production",
-      "migration_status": "pending"
+      "migration_status": "native_replacement_tested_legacy_entrypoint_retained",
+      "rust": "src/recovery.rs"
     },
     {
       "path": "scripts/permission-block-resolution.py",
       "role": "production",
-      "migration_status": "pending"
+      "migration_status": "native_replacement_tested_legacy_entrypoint_retained",
+      "rust": "src/recovery.rs"
     },
     {
       "path": "scripts/pre-admission-recovery.py",
       "role": "production",
-      "migration_status": "pending"
+      "migration_status": "native_replacement_tested_legacy_entrypoint_retained",
+      "rust": "src/recovery.rs"
     },
     {
       "path": "scripts/queue-fixture-policy.py",
@@ -147,7 +151,8 @@
     {
       "path": "scripts/spark-control.py",
       "role": "production",
-      "migration_status": "pending"
+      "migration_status": "native_replacement_tested_legacy_entrypoint_retained",
+      "rust": "src/recovery.rs"
     },
     {
       "path": "scripts/test-bonsai-protocol.py",
@@ -277,7 +282,8 @@
     {
       "path": "scripts/trace-ledger.py",
       "role": "production",
-      "migration_status": "pending"
+      "migration_status": "native_replacement_tested_legacy_entrypoint_retained",
+      "rust": "src/trace_ledger.rs"
     },
     {
       "path": "tests/fixtures/owned-native-recovery/check.py",
@@ -293,8 +299,49 @@
       "path": "tests/fixtures/owned-native-recovery/verify.py",
       "role": "fixture",
       "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-rust-permission-resolution.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-rust-owner-interruption.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-rust-spark-control.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-rust-scope-recovery.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-rust-trace-ledger.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-rust-check-bonsai.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-rust-pre-admission.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-rust-trace-contention.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
     }
   ],
   "remaining_js_python_callsite": "scripts/research-context.mjs",
-  "js_ts_integration": "retained; no production callsites changed"
+  "js_ts_integration": "retained; no production callsites changed",
+  "checkpoint_base_commit": "f5ccf72e21e806d6d9429dd1f4c4e41ef5ebe4c7"
 }

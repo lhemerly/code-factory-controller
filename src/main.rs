@@ -1,7 +1,7 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use clap::{Parser, Subcommand};
 use code_factory_controller::{engine::Engine, model::*};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
@@ -80,6 +80,92 @@ enum Command {
     Schemas {
         #[arg(long, default_value = "schemas")]
         output: PathBuf,
+    },
+    /// Read-only audit of an owner-pinned contract-only permission-block resolution.
+    PermissionBlockResolution {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        directory: PathBuf,
+        #[arg(long)]
+        controller: PathBuf,
+        #[arg(long)]
+        next_sequence: u64,
+    },
+    /// Audit an explicit owner's stopped attempt; never resolve a native access denial.
+    OwnerInterruption {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        directory: PathBuf,
+        #[arg(long)]
+        controller: PathBuf,
+        #[arg(long)]
+        next_sequence: u64,
+    },
+    /// Owner-only reconciliation of a reserved identifier that never became a job.
+    PreAdmissionRecovery {
+        #[command(subcommand)]
+        action: PreAdmissionAction,
+    },
+    /// Local host controls for spark code factory.
+    SparkControl {
+        action: String,
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Read-only, fail-closed preflight for local Bonsai runtime.
+    CheckBonsai {
+        #[arg(long, default_value = "http://127.0.0.1:4096")]
+        opencode_url: String,
+    },
+    /// Offline, non-authoritative ledger for explicitly reviewed sanitized summaries.
+    TraceLedger {
+        operation: String,
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        input: Option<PathBuf>,
+        #[arg(long)]
+        source_id: Option<String>,
+        #[arg(long)]
+        format: Option<String>,
+        #[arg(long)]
+        evidence_kind: Option<String>,
+        #[arg(long)]
+        reviewed_sanitized: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum PreAdmissionAction {
+    Audit {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        directory: PathBuf,
+        #[arg(long)]
+        controller: PathBuf,
+    },
+    Reconcile {
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        goal: String,
+        #[arg(long)]
+        owned_receipt: PathBuf,
+    },
+    AdvanceScope {
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        goal: String,
+        #[arg(long)]
+        published_state: PathBuf,
+        #[arg(long)]
+        repair_input: String,
     },
 }
 fn main() -> Result<()> {
@@ -244,6 +330,172 @@ async fn run(cli: Cli) -> Result<()> {
                     output.join(format!("{name}.json")),
                     serde_json::to_string_pretty(&schema)? + "\n",
                 )?;
+            }
+        }
+        Command::PermissionBlockResolution {
+            root,
+            directory,
+            controller,
+            next_sequence,
+        } => {
+            let res = code_factory_controller::recovery::audit_permission_block_resolution(
+                &root,
+                &directory,
+                &controller,
+                next_sequence,
+            )?;
+            println!("{}", serde_json::to_string(&res)?);
+        }
+        Command::OwnerInterruption {
+            root,
+            directory,
+            controller,
+            next_sequence,
+        } => {
+            let res = code_factory_controller::recovery::audit_owner_interruption(
+                &root,
+                &directory,
+                &controller,
+                next_sequence,
+            )?;
+            println!("{}", serde_json::to_string(&res)?);
+        }
+        Command::PreAdmissionRecovery { action } => match action {
+            PreAdmissionAction::Audit {
+                root,
+                directory,
+                controller,
+            } => {
+                let res = code_factory_controller::recovery::audit_pre_admission(
+                    &root,
+                    &directory,
+                    &controller,
+                )?;
+                println!("{}", serde_json::to_string(&res)?);
+            }
+            PreAdmissionAction::Reconcile {
+                manifest,
+                goal,
+                owned_receipt,
+            } => {
+                let res = code_factory_controller::recovery::reconcile_pre_admission(
+                    &manifest,
+                    &goal,
+                    &owned_receipt,
+                )?;
+                println!("{}", serde_json::to_string(&res)?);
+            }
+            PreAdmissionAction::AdvanceScope {
+                manifest,
+                goal,
+                published_state,
+                repair_input,
+            } => {
+                let res = code_factory_controller::recovery::advance_scope_base(
+                    &manifest,
+                    &goal,
+                    &published_state,
+                    &repair_input,
+                )?;
+                println!("{}", serde_json::to_string(&res)?);
+            }
+        },
+        Command::SparkControl {
+            action,
+            root,
+            reason,
+        } => match action.as_str() {
+            "status" => {
+                let out = code_factory_controller::recovery::spark_status(&root)?;
+                print!("{out}");
+            }
+            "pause" => {
+                let out = code_factory_controller::recovery::spark_pause(&root, reason.as_deref())?;
+                println!("{out}");
+            }
+            "resume" => {
+                let r = reason.context(
+                    "resume requires an explicit --reason after inspecting recovery evidence",
+                )?;
+                let out = code_factory_controller::recovery::spark_resume(&root, &r)?;
+                println!("{out}");
+            }
+            other => bail!("unsupported spark action: {other}"),
+        },
+        Command::CheckBonsai { opencode_url } => {
+            match code_factory_controller::check_bonsai::check(&opencode_url).await {
+                Ok(val) => {
+                    println!("{}", serde_json::to_string(&val)?);
+                }
+                Err(e) => {
+                    println!(
+                        "{}",
+                        serde_json::to_string(&json!({
+                            "passed": false,
+                            "error": e.to_string(),
+                        }))?
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+        Command::TraceLedger {
+            operation,
+            db,
+            input,
+            source_id,
+            format,
+            evidence_kind,
+            reviewed_sanitized,
+        } => {
+            let res = (|| -> Result<Value> {
+                let mut document = None;
+                if operation != "report" {
+                    ensure!(
+                        input.is_some()
+                            && source_id.is_some()
+                            && format.is_some()
+                            && evidence_kind.is_some()
+                            && reviewed_sanitized,
+                        "explicit input, source identity, format, kind and sanitization review acknowledgment required"
+                    );
+                    let raw = code_factory_controller::trace_ledger::read_reviewed(
+                        input.as_ref().unwrap(),
+                    )?;
+                    document = Some(code_factory_controller::trace_ledger::normalize(
+                        &raw,
+                        format.as_ref().unwrap(),
+                        evidence_kind.as_ref().unwrap(),
+                    )?);
+                }
+                let mut ledger = code_factory_controller::trace_ledger::Ledger::open(
+                    &db,
+                    operation != "import",
+                )?;
+                if operation == "report" {
+                    ledger.report()
+                } else if operation == "replay" {
+                    ledger.replay(source_id.as_deref().unwrap(), document.as_ref().unwrap())
+                } else if operation == "import" {
+                    ledger.import_summary(source_id.as_deref().unwrap(), document.as_ref().unwrap())
+                } else {
+                    bail!("unsupported operation: {operation}")
+                }
+            })();
+            match res {
+                Ok(val) => {
+                    println!("{}", code_factory_controller::trace_ledger::canonical(&val));
+                }
+                Err(_) => {
+                    println!(
+                        "{}",
+                        code_factory_controller::trace_ledger::canonical(&json!({
+                            "passed": false,
+                            "error": "trace operation rejected; check schema, bounds, provenance and local file access",
+                        }))
+                    );
+                    std::process::exit(1);
+                }
             }
         }
     }

@@ -8,7 +8,7 @@ permissions:
 jobs:
   rust-and-contract:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -50,6 +50,16 @@ jobs:
         run: |
           python3 scripts/test-rust-goal-acceptance.py
           python3 scripts/test-rust-goal-runner.py
+      - name: Check Rust recovery and utility compatibility (local fixtures only)
+        run: |
+          python3 scripts/test-rust-permission-resolution.py
+          python3 scripts/test-rust-owner-interruption.py
+          python3 scripts/test-rust-spark-control.py
+          python3 scripts/test-rust-scope-recovery.py
+          python3 scripts/test-rust-trace-ledger.py
+          python3 scripts/test-rust-pre-admission.py
+          python3 scripts/test-rust-trace-contention.py
+          python3 scripts/test-rust-check-bonsai.py
       - name: Exercise two-goal owner CLI (fake providers, real verification)
         run: |
           python3 scripts/test-dispatch-cli.py

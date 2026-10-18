@@ -1,6 +1,7 @@
 pub mod adapter;
 pub mod agy;
 pub mod agy_stream;
+pub mod check_bonsai;
 pub mod connector;
 pub mod engine;
 pub mod execution;
@@ -12,6 +13,8 @@ pub mod local_agent;
 pub mod model;
 pub mod opencode_v2;
 pub mod protocol;
+pub mod recovery;
 pub mod store;
 pub mod supervisor;
+pub mod trace_ledger;
 pub mod tui;
