@@ -156,7 +156,10 @@ async fn missing_usage_stays_unknown_and_cannot_qualify_completion() {
         json!({"type":"assistant","model":{"providerID":"opencode","id":"big-pickle"},"time":{"completed":1},"content":[]}),
     ];
     let error = f.engine.seal_v2("job").await.unwrap_err().to_string();
-    assert!(error.contains("settlement: unknown"));
+    assert!(
+        error.contains("requires settlement") && error.contains("unknown"),
+        "{error}"
+    );
     assert_eq!(
         f.engine.status(&f.engine.get("job").unwrap())["execution_seal"],
         Value::Null
