@@ -10,6 +10,7 @@ import {buildResearchContext,createCycleDirectory,commitSubject,captureVerificat
 import {OwnershipLease,observeResearch,RepeatedToolFailure} from './continuous-ownership.mjs';
 import {awaitNativeCompletion,classifyNativeFailure} from './native-completion.mjs';
 import {sandbox,workerPermissions} from './spark-sandbox.mjs';
+import {startNativeExecution,stopNativeExecution,nativeExecutionBinding,assertImmutableSourceCandidate} from './native-execution.mjs';
 import {waitForFactoryPlugin} from './native-plugin-readiness.mjs';
 import {freeModels,route,failure,recoveryAction,replacementAllowed,approvedScope} from './free-model-policy.mjs';
 const oneCycle=process.argv.includes('--one-cycle');
@@ -62,16 +63,20 @@ async function runCycle(sequence){
  for(const d of ['home','config','data','cache','state'])await mkdir(resolve(profile,d),{mode:0o700});
  const nativeEnv={...env,HOME:resolve(profile,'home'),XDG_CONFIG_HOME:resolve(profile,'config'),XDG_DATA_HOME:resolve(profile,'data'),XDG_CACHE_HOME:resolve(profile,'cache'),XDG_STATE_HOME:resolve(profile,'state')};
  const operator=randomBytes(32).toString('hex'),worker=randomBytes(32).toString('hex');let password='',native,controller,client,child,parent,work,job,lease,phase='catalog';
- let out={sequence,started_utc:now(),status:'starting',base:state.base,goal_id:goal.id,cleanup_confirmed:false,admission_requested:false};
+ let out={native_source_barrier_version:1,sequence,started_utc:now(),status:'starting',base:state.base,goal_id:goal.id,cleanup_confirmed:false,admission_requested:false};
  const cycleSave=async()=>{await atomic(resolve(dir,'result.json'),out);state.current={sequence,directory:dir,status:out.status,job,child:child?.id,worktree:work,phase};await persist()};
  const processes=[];
  const red=s=>s.replaceAll(operator,'[redacted]').replaceAll(worker,'[redacted]').replaceAll(password||'\0','[redacted]').split('\n').filter(l=>!/server password|authorization|bearer/i.test(l)).join('\n');
  async function launch(binary,args,vars,cwd,ready){const p=spawn(binary,args,{cwd,env:vars,stdio:['ignore','pipe','pipe']});processes.push(p);let output='';const append=b=>output=(output+b.toString()).slice(-1048576);p.stdout.on('data',append);p.stderr.on('data',append);p._log=()=>red(output);for(let i=0;i<300;i++){const found=ready(output);if(found)return{p,...found};if(p.exitCode!==null||p.signalCode!==null)throw Error('Process startup failed: '+red(output));if(shutdown)throw Error('Operator stopping');await delay(100)}throw Error('Process startup timeout')}
- async function stop(p){if(!p||p.exitCode!==null||p.signalCode!==null)return;const ended=new Promise(ok=>p.once('exit',ok));p.kill('SIGTERM');await Promise.race([ended,delay(8000)]);if(p.exitCode===null&&p.signalCode===null){p.kill('SIGKILL');await ended}}
+ async function stop(p){if(p?._ownedNative)return stopNativeExecution(p);if(!p||p.exitCode!==null||p.signalCode!==null)return;const ended=new Promise(ok=>p.once('exit',ok));p.kill('SIGTERM');await Promise.race([ended,delay(8000)]);if(p.exitCode===null&&p.signalCode===null){p.kill('SIGKILL');await ended}}
  let controllerURL,nativeURL;
  async function op(name,body={}){const res=await fetch(controllerURL+'/operator/'+name,{method:'POST',headers:{authorization:'Bearer '+operator,'content-type':'application/json'},body:JSON.stringify({job_id:job,...body}),signal:AbortSignal.timeout(name==='seal-v2'?120000:40000)});const value=await res.json();await atomic(resolve(dir,'operator-'+name+'.json'),value);if(!res.ok)throw Error('Controller '+name+' HTTP '+res.status+': '+JSON.stringify(value));return value}
- async function startNative(location,factory=false){
-  const start=await launch('/usr/bin/bwrap',[...sandbox(cfg,repo,location,profile,protectedPaths),'serve','--hostname','127.0.0.1','--port',new URL(nativeURL).port],{...nativeEnv,...(factory?{PSTACK_FACTORY_URL:controllerURL,PSTACK_FACTORY_PROJECT:cfg.project_id??'spark-full-scroll',PSTACK_FACTORY_TOKEN:worker}:{})},location,o=>{const p=/server password (\S+)/.exec(o);return o.includes('server listening on')&&p?{password:p[1]}:undefined});native=start.p;password=start.password;
+ async function startNative(location,factory=false,readOnly=false){
+  const args=[...sandbox(cfg,repo,location,profile,protectedPaths,{readOnly}),'serve','--hostname','127.0.0.1','--port',new URL(nativeURL).port];
+  const vars={...nativeEnv,...(factory?{PSTACK_FACTORY_URL:controllerURL,PSTACK_FACTORY_PROJECT:cfg.project_id??'spark-full-scroll',PSTACK_FACTORY_TOKEN:worker}:{})};
+  const ready=o=>{const p=/server password (\S+)/.exec(o);return o.includes('server listening on')&&p?{password:p[1]}:undefined};
+  const start=factory?await startNativeExecution({controller:cfg.controller,argv:['/usr/bin/bwrap',...args],env:vars,cwd:location,directory:dir,commit:state.base,ready,shouldStop:()=>shutdown,onProcess:p=>processes.push(p),red}):await launch('/usr/bin/bwrap',args,vars,location,ready);
+  native=start.p;password=start.password;
   client=OpenCode.make({baseUrl:nativeURL,fetch:(u,o={})=>fetch(u,{...o,signal:AbortSignal.any([AbortSignal.timeout(30000),...(o.signal?[o.signal]:[])])}),headers:{authorization:'Basic '+Buffer.from('opencode:'+password).toString('base64'),'x-opencode-directory':location}});
   if((await client.server.info()).version!=='2.0.29')throw Error('Unsupported native runtime');
  }
@@ -137,6 +142,28 @@ async function runCycle(sequence){
   lease.start();
   }
   if(shutdown)throw Error('Operator stopping');
+  // Quiet API observations cannot freeze delayed continuations. Stop the exact
+  // writable native tree through the existing kernel, then expose its settled
+  // database from a fresh server whose code worktree is mounted read-only.
+  phase='native_sealing';await cycleSave();await lease.tick(true);
+  out.native_completion_stop=await stop(native);await cycleSave();
+  if(out.native_completion_stop.receipt.termination_reason!=='controller_disconnected')throw Error('Native completion did not reach an owned cutover');
+  lease.start();await startNative(work,true,true);out.native_readonly_execution=nativeExecutionBinding(native);
+  await atomic(resolve(dir,'host-private.json'),{operator,worker,password,controllerURL,nativeURL});
+  await client.agent.list();out.readonly_plugin=await waitForFactoryPlugin(client,{checkpoint:observation=>atomic(resolve(dir,'readonly-plugin-readiness.json'),observation)});
+  await lease.stop();await lease.tick(true);await stop(controller);
+  controller=(await launch(cfg.controller,['serve','--config',resolve(dir,'controller.json'),'--listen',new URL(controllerURL).host],{...env,FACTORY_OPERATOR_TOKEN:operator,FACTORY_OPENCODE_PASSWORD:password},repo,o=>o.includes('controller listening on')?{}:undefined)).p;
+  await atomic(resolve(dir,'host-private.json'),{operator,worker,password,controllerURL,nativeURL});
+  await lease.tick(true);
+  // Fresh independently checked accounting/history must still match the fence.
+  // A killed in-flight continuation remains unaccepted, with unknown usage kept.
+  try{out.native_seal=await op('seal-v2',{expected_native_updated:child.time.updated})}catch(e){
+   const text=String(e);
+   if(/Native completion changed after admission fence|V2 (?:session|transcript) changed during observation|V2 export accounting changed|V2 session still active|V2 pending inbox work|V2 assistant completion unknown|V2 accounting requires settlement: unknown/.test(text))throw Error('Owned native cutover changed: '+text);
+   throw e;
+  }
+  if(out.native_seal.status!=='sealed')throw Error('Native cutover did not preserve sealed completion');
+  await lease.tick(true);
   phase='verification';out.status='verifying';await cycleSave();
   // Commit only approved tracked/additional source paths; never ignored data/native configuration.
   const changed=git(work,'status','--porcelain','--untracked-files=all');out.diff_status=changed;
@@ -145,6 +172,7 @@ async function runCycle(sequence){
   if(!approvedScope(git(work,'diff','--name-only',cfg.scope_base??cfg.initial_base).split('\n').filter(Boolean),template))throw Error('Protected/allowed path scope violation');
   git(work,'add','--',...template.allowed_paths.filter(p=>{try{execFileSync('/usr/bin/test',['-e',resolve(work,p)]);return true}catch{return false}}));
   if(!git(work,'diff','--cached','--name-only'))throw Error('No approved candidate changes');
+  assertImmutableSourceCandidate(git(work,'diff','--cached',cfg.scope_base??cfg.initial_base,'--raw','--no-abbrev','--no-renames'));
   git(work,'commit','-m',commitSubject(cfg,goal,sequence));out.candidate=git(work,'rev-parse','HEAD');out.scope_approved=true;
   await client.session.command({sessionID:child.id,name:'pstack-factory',text:'verify verify-'+sequence+' '+out.candidate});
   // The controller's durable scheduler advances verification. Keep operator
@@ -168,10 +196,10 @@ async function runCycle(sequence){
   if(lease)await lease.stop();out.phase=phase;
   if(child&&client){try{const s=await client.session.get({sessionID:child.id});out.usage={model:s.model??null,cost:s.cost??null,tokens:s.tokens??null};out.native_session=safe(s);await atomic(resolve(dir,'native-session-final.json'),safe(s));await atomic(resolve(dir,'native-context-final.json'),safe(await client.session.context({sessionID:child.id})))}catch(e){out.accounting_error=red(String(e));out.usage??={cost:null,tokens:null,model:null}}}
   if(out.status!=='accepted'&&controller&&job){try{await op('cancel');out.abort=await op('abort');const s=await op('status');out.recovery=s.execution_recovery;if(out.usage)out.usage.accounting_status=s.execution_recovery?.accounting?.status??'unknown';out.execution_stop=s.execution_recovery?.execution_stop?.status??s.execution_recovery?.execution_stop;await atomic(resolve(dir,'fenced-status.json'),s)}catch(e){out.fence_error=red(String(e))}}
-  for(const p of processes.toReversed())await stop(p);
-  out.cleanup_confirmed=processes.every(p=>p.exitCode!==null||p.signalCode!==null);
-  // Native bwrap has a private PID namespace: termination kills all namespace descendants.
-  out.namespace_cleanup='bwrap private PID namespace; die-with-parent; host-owned TERM then KILL cleanup; foreground pool retains ownership lock';
+  for(const p of processes.toReversed()){try{await stop(p)}catch(e){(out.cleanup_errors??=[]).push(red(String(e)))}}
+  out.cleanup_confirmed=!out.cleanup_errors?.length&&processes.every(p=>(p.exitCode!==null||p.signalCode!==null)&&(!p._ownedNative||p._ownedNative.receipt?.quiescent===true));
+  if(!out.cleanup_confirmed&&out.status==='accepted'){out.status='failed';out.failure_kind='blocked';out.error='Accepted candidate retained; execution cleanup remains unconfirmed'}
+  out.namespace_cleanup='Writable native tree stopped by the existing Linux subreaper/pidfd kernel with exact independent receipt; verification server mounts source read-only; foreground pool retains ownership lock';
   if(out.status!=='accepted'&&work&&out.cleanup_confirmed&&out.recovery?.execution_stop?.status==='confirmed'){
    try{
     const template=JSON.parse(await readFile(resolve(root,'job-template.json')));

@@ -77,3 +77,9 @@ test('actual host seal transport outlasts two bounded observations; ordinary cal
   assert.equal((await op('seal-v2')).qualified,true);
   await assert.rejects(op('status'),/transport deadline/);
 });
+
+test('only a host-qualified cutover mismatch admits a fresh repair; denials remain sticky',()=>{
+ assert.equal(classifyNativeFailure('Error: Owned native cutover changed: V2 accounting requires settlement: unknown','native_sealing'),'repair');
+ assert.equal(classifyNativeFailure('V2 accounting requires settlement: unknown','native_sealing'),'blocked');
+ assert.equal(classifyNativeFailure('Error: Owned native cutover changed: HTTP 403 permission denied','native_sealing'),'denied');
+});

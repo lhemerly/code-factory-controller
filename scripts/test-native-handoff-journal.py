@@ -1,5 +1,5 @@
 """Real handoff persistence/user-pause/owner-death faults, disposable children only."""
-import pathlib,subprocess,json,hashlib,time,tempfile,sys
+import pathlib,subprocess,json,hashlib,time,tempfile,sys,fcntl
 binary=pathlib.Path(sys.argv[1]);out=pathlib.Path(sys.argv[2]);out.mkdir();kind=sys.argv[3]
 def put(p,v):p.write_text(json.dumps(v))
 def read(p):return json.loads(p.read_text())
@@ -22,7 +22,14 @@ for variant in (['replace','inplace'] if kind=='user-pause' else [kind]):
   if kind=='bounded':goals[0]['admission_mode']='one_cycle'
   m={'goals':goals,'state':str(state),'pool_lock':str(r/'pool.lock'),'worker_slots':1,'controller':str(binary),'trusted_files':{str(binary):sha(binary)}};put(mp,m);pins=r/'pins.json';put(pins,{'dispatcher':str(replacement),'files':{str(replacement):sha(replacement)}})
   active={'version':1,'cursor':0,'status':'running','current':{'goal':'goal','phase':'running'},'goals':{'goal':{'state':'ready','milestones':[]},'manual':{'state':'paused','milestones':[]}}};put(state,active)
-  owner=subprocess.Popen(['/bin/sleep','60']);put(q/'owner.json',{'state':'active','process':identity(owner.pid)});helper=None;log=(out/(variant+'.log')).open('wb');record={'variant':variant}
+  # A real pinned native owner publishes its own canonical launch binding.
+  # Hold this disposable pool to prevent admission while the fixture controls
+  # the existing state-boundary and crash cases below.
+  pool=(r/'pool.lock').open('a');fcntl.flock(pool,fcntl.LOCK_EX)
+  owner_log=(out/(variant+'-owner.log')).open('wb')
+  owner=subprocess.Popen([str(binary),'research-dispatch','run','--manifest',str(mp),'--queue',str(q),'--wait-for-owner'],stdout=owner_log,stderr=owner_log)
+  assert wait(lambda:(q/'owner.json').exists() and read(q/'owner.json').get('state')=='waiting_for_boundary'),'native owner did not publish its bound identity'
+  helper=None;log=(out/(variant+'.log')).open('wb');record={'variant':variant}
   try:
    if kind=='journal-failure':(q/'handoff.json').mkdir()
    helper=subprocess.Popen([str(binary),'queue-handoff','--manifest',str(mp),'--queue',str(q),'--runtime-pins',str(pins)],stdout=log,stderr=log)
@@ -34,17 +41,17 @@ for variant in (['replace','inplace'] if kind=='user-pause' else [kind]):
      text='User override while maintenance waits'
      if variant=='replace':p=goal/'user-pause';p.write_text(text);p.replace(goal/'PAUSE')
      else:(goal/'PAUSE').write_text(text)
-     paused={**active,'status':'paused','current':None,'goals':{'goal':{'state':'paused','milestones':[]},'manual':{'state':'paused','milestones':[]}}};put(state,paused);helper.wait(timeout=12);owner.wait(timeout=5)
+     paused={**active,'status':'paused','current':None,'goals':{'goal':{'state':'paused','milestones':[]},'manual':{'state':'paused','milestones':[]}}};put(state,paused);owner.wait(timeout=8);pool.close();helper.wait(timeout=12)
      record.update(helper_exit=helper.returncode,user_pause_preserved=(goal/'PAUSE').read_text()==text,goal_stays_paused=read(state)['goals']['goal']['state']=='paused',no_goal_resume_event=not (goal/'events.ndjson').exists(),replacement_started=marker.exists())
     elif kind=='bounded':
      # The bounded cycle completed while its maintenance request was pending.
      put(goal/'status.json',{'sequence':1,'current':None,'status':'waiting'})
      paused={**active,'status':'paused','current':None,'goals':{'goal':{'state':'paused','milestones':[],'native_status':'accepted','reason':'Bounded implementation cycle ended; independent review or explicit repair admission required'},'manual':{'state':'paused','milestones':[]}}};put(state,paused)
-     helper.wait(timeout=12);owner.wait(timeout=5)
+     owner.wait(timeout=8);pool.close();helper.wait(timeout=12)
      record.update(helper_exit=helper.returncode,bounded_scope_preserved=read(state)['goals']['goal']['state']=='paused',owned_pause_detached=not (goal/'PAUSE').exists(),replacement_started=marker.exists())
     else:
      # Crash only the directly owned dummy coordinator; no state file changes.
-     owner.kill();owner.wait(timeout=5);woke=wait(lambda:helper.poll() is not None,4)
+     owner.kill();owner.wait(timeout=5);pool.close();woke=wait(lambda:helper.poll() is not None,4)
      record.update(owner_death_woke_handoff=woke,replacement_started=marker.exists(),uncertain_admission_fenced=woke and helper.returncode!=0)
    record['unrelated_pause_preserved']=(manual/'PAUSE').read_text()=='Existing user pause'
   finally:
@@ -54,6 +61,6 @@ for variant in (['replace','inplace'] if kind=='user-pause' else [kind]):
     if p is not None:
      try:p.wait(timeout=5)
      except subprocess.TimeoutExpired:p.kill();p.wait(timeout=5)
-   log.close()
+   log.close();owner_log.close();pool.close()
   records.append(record)
 (out/'observations.json').write_text(json.dumps({'scope':'Local actual-native fault fixtures only; no provider or shared owner','records':records},indent=2)+'\n');print(json.dumps(records))

@@ -147,6 +147,17 @@ pub fn audit_cycle(
                 == Some(expected_verification_id),
         "Controller did not confirm exact passing integrated delivery"
     );
+    if goal["require_native_source_barrier"] == true
+        || out.get("native_source_barrier_version").is_some()
+    {
+        let root = Path::new(crate::goal_acceptance::string(goal, "root")?);
+        crate::native_barrier::audit(
+            directory,
+            out,
+            &crate::recovery::read_json(&root.join("supervisor.json"))?,
+            &authoritative,
+        )?;
+    }
     let delivery = authoritative
         .get("delivery")
         .context("delivery missing in authoritative status")?;

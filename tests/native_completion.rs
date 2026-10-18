@@ -144,7 +144,7 @@ async fn continuation_race_retains_a_durable_fence_across_controller_restart() {
     let (f, r, server) = fixture().await;
     {
         let mut r = r.lock().unwrap();
-        r.active_at = r.calls + 2;
+        r.active_at = r.calls + 3;
     }
     assert!(f.engine.seal_v2("job", &json!(1)).await.is_err());
     let status = f.engine.status(&f.engine.get("job").unwrap());

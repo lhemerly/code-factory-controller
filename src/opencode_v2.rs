@@ -473,8 +473,51 @@ impl Engine {
         if final_info["time"]["updated"] != info["time"]["updated"]
             || final_info["cost"] != info["cost"]
             || final_info["tokens"] != info["tokens"]
+            || final_info["outcome"] != info["outcome"]
+            || final_info["model"] != info["model"]
         {
             return Err(pending("V2 session changed during observation"));
+        }
+        if quiet {
+            let after = runtime
+                .call(
+                    &format!("/api/experimental/session/{session}/export"),
+                    worktree,
+                    false,
+                    &[],
+                )
+                .await?;
+            if identity(&after["data"]["info"], session, worktree)? != observed {
+                bail!("V2 final export ownership mismatch");
+            }
+            if after["data"] != *exported {
+                return Err(pending("V2 transcript changed during observation"));
+            }
+            let active = runtime
+                .call("/api/session/active", worktree, false, &[])
+                .await?;
+            if active["data"]
+                .as_object()
+                .context("V2 final active observation unknown")?
+                .contains_key(session)
+            {
+                return Err(pending("V2 session still active"));
+            }
+            let inbox = runtime
+                .call(
+                    &format!("/api/session/{session}/inbox"),
+                    worktree,
+                    false,
+                    &[],
+                )
+                .await?;
+            if !inbox["data"]
+                .as_array()
+                .context("V2 final inbox observation unknown")?
+                .is_empty()
+            {
+                return Err(pending("V2 pending inbox work"));
+            }
         }
         audit_messages(messages, quiet)?;
         let accounting = accounting(&self.config, &info, messages);

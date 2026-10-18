@@ -32,3 +32,5 @@ pub mod cli_update;
 pub mod github_review;
 
 pub mod dashboard;
+
+pub mod native_barrier;

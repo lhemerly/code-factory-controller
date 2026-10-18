@@ -1,7 +1,7 @@
 """Local fault injection with real native handoff CLI; only owned disposable children.
 No model, actual productive worker, deployment, remote or shared-runtime operation.
 """
-import pathlib,subprocess,json,hashlib,time,tempfile,os,sys,signal
+import pathlib,subprocess,json,hashlib,time,tempfile,os,sys,signal,fcntl
 B=pathlib.Path(sys.argv[1]).resolve();OUT=pathlib.Path(sys.argv[2]).resolve();OUT.mkdir(mode=0o700,exist_ok=True)
 def put(p,v):p.parent.mkdir(parents=True,exist_ok=True);p.write_text(json.dumps(v))
 def read(p):return json.loads(p.read_text())
@@ -25,11 +25,17 @@ with tempfile.TemporaryDirectory(prefix='cf-native-handoff-') as td:
   manifest={'goals':goals,'state':str(state),'pool_lock':str(root/'pool.lock'),'worker_slots':1,'controller':str(B),'trusted_files':{str(B):sha(B)}};put(mp,manifest)
   active={'version':1,'cursor':0,'status':'running','current':{'goal':'goal','phase':'running'},'goals':{'goal':{'state':'ready','milestones':[]},'manual':{'state':'paused','milestones':[]}}};put(state,active)
   target=root/'replacement';marker=root/'replacement-started';target.write_text('#!/bin/sh\nprintf replacement > '+str(marker)+'\n');target.chmod(0o700);pins=root/'pins.json';put(pins,{'dispatcher':str(target),'files':{str(target):sha(target)}})
-  owner=subprocess.Popen(['/bin/sleep','90']);helpers=[];files=[];record={'kind':kind,'scope':'Owned dummy coordinator only; no productive worker interrupted','source_binary_sha256':sha(B)}
+  # Real pinned native coordinator; a fixture-owned pool lock keeps it
+  # before admission while preserving the existing boundary/crash assertions.
+  pool=(root/'pool.lock').open('a');fcntl.flock(pool,fcntl.LOCK_EX)
+  owner_log=(OUT/(kind+'-owner.log')).open('wb')
+  owner=subprocess.Popen([str(B),'research-dispatch','run','--manifest',str(mp),'--queue',str(queue),'--wait-for-owner'],stdout=owner_log,stderr=owner_log)
+  assert wait_for(lambda:(queue/'owner.json').exists() and read(queue/'owner.json').get('state')=='waiting_for_boundary'),'native owner did not publish its bound identity'
+  helpers=[];files=[];record={'kind':kind,'scope':'Owned real native coordinator held before admission; no productive worker interrupted','source_binary_sha256':sha(B)}
   def start(n):
    log=(OUT/(kind+'-'+str(n)+'.log')).open('wb');files.append(log);p=subprocess.Popen([str(B),'queue-handoff','--manifest',str(mp),'--queue',str(queue),'--runtime-pins',str(pins)],stdout=log,stderr=log);helpers.append(p);return p
   try:
-   put(queue/'owner.json',{'state':'active','process':identity(owner.pid)});first=start(1);hp=queue/'handoff.json'
+   first=start(1);hp=queue/'handoff.json'
    assert wait_for(lambda:hp.exists() and 'goal' in read(hp).get('owned_pauses',{})), 'first helper did not retain pause ownership'
    original=read(hp);pause=(goalroot/'PAUSE').read_text();record['first_record']=original;record['pause_created_by_actual_helper']=pause;record['productive_owner_preserved_while_active']=owner.poll() is None
    helper=first
@@ -38,6 +44,7 @@ with tempfile.TemporaryDirectory(prefix='cf-native-handoff-') as td:
     assert wait_for(lambda:hp.exists() and read(hp).get('process',{}).get('pid')==helper.pid), 'replacement helper did not record its identity'
     record['restart_owned_pause_retained']='goal' in read(hp).get('owned_pauses',{});record['restart_record']=read(hp)
    paused={**active,'status':'paused','current':None,'goals':{'goal':{'state':'paused','milestones':[]},'manual':{'state':'paused','milestones':[]}}};put(state,paused)
+   owner.wait(timeout=8);pool.close()
    if kind=='separate-state-directory':
     woke=wait_for(lambda:owner.poll() is not None or helper.poll() is not None,4)
     record['actual_state_change_woke_handoff']=woke
@@ -53,5 +60,6 @@ with tempfile.TemporaryDirectory(prefix='cf-native-handoff-') as td:
     try:p.wait(timeout=5)
     except subprocess.TimeoutExpired:p.kill();p.wait(timeout=5)
    for f in files:f.close()
+   owner_log.close();pool.close()
   records.append(record)
 (OUT/'observations.json').write_text(json.dumps({'scope':'Local real-native process fault fixtures only','records':records},indent=2)+'\n');print(json.dumps({'records':records}))

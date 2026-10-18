@@ -5,6 +5,9 @@ export function classifyNativeFailure(text,phase) {
   if(phase!=='native_sealing')return classify(text,phase);
   const guarded=classify(text,'native');
   if(guarded==='denied'||/permission.?denied|scope violation|ownership.*(?:changed|unknown)/i.test(text))return guarded;
+  // Only the host emits this after independently stopping the writable tree.
+  // Fail this attempt closed, then allow a fresh owned repair; never reuse it.
+  if(/^(?:Error: )?Owned native cutover changed:/.test(text))return 'repair';
   // Only a qualified local control transport failure authorizes stop recovery.
   // A denial, pricing/accounting uncertainty or schema error never does.
   if(/timeout|timed.out|V2 observation deadline exceeded|ECONN|Connection refused|fetch failed|HTTP 50[234]/i.test(text))return 'repair';

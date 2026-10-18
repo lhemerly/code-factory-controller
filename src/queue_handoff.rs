@@ -735,7 +735,9 @@ pub fn run_cli(a: Options) -> Result<()> {
     {
         let _owner = Lock::acquire(&queue.root.join("owner.lock"), false)?;
         let manifest = read(&a.manifest)?;
-        let _pool = Lock::acquire(&path(&manifest, "pool_lock")?, false)?;
+        // The retired owner may release inherited pool custody after its PID
+        // exits. Wait for that actual lock boundary; never detach/admit early.
+        let _pool = Lock::acquire(&path(&manifest, "pool_lock")?, true)?;
         transaction.validate(&manifest)?;
         let mut detached = vec![];
         for g in list(&manifest, "goals")? {
