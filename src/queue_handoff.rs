@@ -612,16 +612,34 @@ pub fn run_cli(a: Options) -> Result<()> {
         dispatcher.recover_and_audit()?;
         for g in &detached {
             let name = string(g, "id")?;
-            let resume_prepared = !root(g)?.join("PAUSE").exists();
+            let mut resume_prepared = !root(g)?.join("PAUSE").exists();
+            let _gs_state = dispatcher.s["goals"][name]["state"].as_str().unwrap_or("");
+            let gs_reason = dispatcher.s["goals"][name]["reason"].as_str().unwrap_or("");
+            // Never resume exhausted one-cycle goals or goals paused due to scope exhaustion
+            if resume_prepared && g["admission_mode"] == "one_cycle" {
+                resume_prepared = false;
+            }
+            // Also check for bounded exhaustion reason
+            if resume_prepared && gs_reason.contains("Bounded implementation cycle ended") {
+                resume_prepared = false;
+            }
             if resume_prepared {
                 d::resume_after_handoff(&manifest, g)?;
-                if dispatcher.s["goals"][name]["state"] == "paused" {
-                    dispatcher.s["goals"][name]["state"] = json!("ready")
+                let new_state = dispatcher.s["goals"][name]["state"].as_str().unwrap_or("");
+                if new_state == "paused" {
+                    // Keep as paused if it shouldn't be resumed
+                    // (don't change to ready)
+                } else if g["admission_mode"] != "one_cycle" {
+                    dispatcher.s["goals"][name]["state"] = json!("ready");
                 }
             } else {
+                // Ensure state remains paused for exhausted one-cycle goals
                 dispatcher.s["goals"][name]["state"] = json!("paused");
-                dispatcher.s["goals"][name]["reason"] =
-                    json!("Different explicit pause remains authoritative");
+                if root(g)?.join("PAUSE").exists() {
+                    dispatcher.s["goals"][name]["reason"] =
+                        json!("Different explicit pause remains authoritative");
+                }
+                // Preserve existing reason if it's about bounded exhaustion
             }
             // Commit scheduling state before the transaction can declare release
             // complete; a crash earlier safely replays only the same detach.

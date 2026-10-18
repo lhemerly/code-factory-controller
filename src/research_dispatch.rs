@@ -1370,6 +1370,13 @@ fn resume_goal_mode(manifest: &Value, g: &Value, clear_pause: bool) -> Result<()
         "Cannot resume unresolved {}",
         g["id"]
     );
+    // Never resume an exhausted one-cycle goal via maintenance handoff
+    if g["admission_mode"] == "one_cycle" && status["status"] == "paused" {
+        ensure!(
+            false,
+            "Bounded implementation cycle ended; independent review or explicit repair admission required"
+        );
+    }
     if let Some(rp) = status["last_cycle"]["result"].as_str() {
         let directory = Path::new(rp).parent().context("result parent required")?;
         let result = read(Path::new(rp))?;
@@ -1413,6 +1420,10 @@ fn resume_goal_mode(manifest: &Value, g: &Value, clear_pause: bool) -> Result<()
                 )?;
             }
         }
+    }
+    let pause_reason = status["pause_reason"].as_str().unwrap_or("");
+    if g["admission_mode"] == "one_cycle" && pause_reason.contains("Bounded implementation cycle ended") {
+        return Ok(());
     }
     if status["status"] == "paused" || r.join("PAUSE").exists() {
         let reason = "Owner explicitly launched the shared foreground dispatcher; inspect prior owned-stop evidence and continue preserved checkpoints";
