@@ -10,12 +10,29 @@ struct Native {
     messages: Vec<Value>,
     calls: usize,
     active_at: usize,
+    info_reads: usize,
+    change_after_info: usize,
+    change_kind: &'static str,
 }
 async fn mock(State(r): State<Arc<Mutex<Native>>>, uri: Uri) -> Json<Value> {
     let mut r = r.lock().unwrap();
     Json(match uri.path() {
         "/api/info" => json!({"version":"2.0.29"}),
-        "/api/session/ses_native" => json!({"data":r.info}),
+        "/api/session/ses_native" => {
+            r.info_reads += 1;
+            if r.info_reads >= r.change_after_info {
+                match r.change_kind {
+                    "failed" => r.info["outcome"] = json!("failed"),
+                    "revision" => r.info["time"]["updated"] = json!(2),
+                    "history" => r
+                        .messages
+                        .push(json!({"type":"synthetic","content":"late completion"})),
+                    _ => (),
+                }
+                r.change_kind = "done";
+            }
+            json!({"data":r.info})
+        }
         "/api/session" => json!({"data":[r.info],"cursor":{}}),
         "/api/experimental/session/ses_native/export" => {
             json!({"data":{"info":r.info,"messages":r.messages}})
@@ -36,6 +53,9 @@ async fn fixture() -> (Fixture, Arc<Mutex<Native>>, tokio::task::JoinHandle<()>)
         messages: vec![],
         calls: 0,
         active_at: usize::MAX,
+        info_reads: 0,
+        change_after_info: usize::MAX,
+        change_kind: "none",
     }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     f.config.opencode_url = Some(format!("http://{}", listener.local_addr().unwrap()));
@@ -52,14 +72,14 @@ async fn fixture() -> (Fixture, Arc<Mutex<Native>>, tokio::task::JoinHandle<()>)
 #[tokio::test]
 async fn quiet_seal_persists_and_disables_future_inference_without_changing_accounting_policy() {
     let (f, _, server) = fixture().await;
-    let seal = f.engine.seal_v2("job").await.unwrap();
+    let seal = f.engine.seal_v2("job", &json!(1)).await.unwrap();
     assert_eq!(seal["status"], "sealed");
     assert_eq!(seal["accounting_status"], "settled_zero");
     let status = f.engine.status(&f.engine.get("job").unwrap());
     assert_eq!(status["execution_policy"]["models"], json!([]));
     assert_eq!(f.engine.config.policy.models, vec!["opencode/big-pickle"]);
     assert_eq!(
-        f.engine.seal_v2("job").await.unwrap()["seal_id"],
+        f.engine.seal_v2("job", &json!(1)).await.unwrap()["seal_id"],
         seal["seal_id"]
     );
     // Existing worker protocol can verify the immutable candidate, with no new inference.
@@ -100,7 +120,7 @@ async fn quiet_seal_persists_and_disables_future_inference_without_changing_acco
 async fn stale_success_while_active_cannot_seal_or_disable_a_healthy_worker() {
     let (f, r, server) = fixture().await;
     r.lock().unwrap().active_at = 0;
-    assert!(f.engine.seal_v2("job").await.is_err());
+    assert!(f.engine.seal_v2("job", &json!(1)).await.is_err());
     let status = f.engine.status(&f.engine.get("job").unwrap());
     assert_eq!(status["execution_seal"], Value::Null);
     assert_eq!(
@@ -116,7 +136,7 @@ async fn continuation_race_retains_a_durable_fence_across_controller_restart() {
         let mut r = r.lock().unwrap();
         r.active_at = r.calls + 2;
     }
-    assert!(f.engine.seal_v2("job").await.is_err());
+    assert!(f.engine.seal_v2("job", &json!(1)).await.is_err());
     let status = f.engine.status(&f.engine.get("job").unwrap());
     assert_eq!(status["execution_seal"]["status"], "fencing");
     assert_eq!(status["execution_policy"]["models"], json!([]));
@@ -145,7 +165,10 @@ async fn continuation_race_retains_a_durable_fence_across_controller_restart() {
         json!([])
     );
     r.lock().unwrap().active_at = usize::MAX;
-    assert_eq!(engine.seal_v2("job").await.unwrap()["status"], "sealed");
+    assert_eq!(
+        engine.seal_v2("job", &json!(1)).await.unwrap()["status"],
+        "sealed"
+    );
     server.abort();
     drop(temp);
 }
@@ -155,7 +178,12 @@ async fn missing_usage_stays_unknown_and_cannot_qualify_completion() {
     r.lock().unwrap().messages = vec![
         json!({"type":"assistant","model":{"providerID":"opencode","id":"big-pickle"},"time":{"completed":1},"content":[]}),
     ];
-    let error = f.engine.seal_v2("job").await.unwrap_err().to_string();
+    let error = f
+        .engine
+        .seal_v2("job", &json!(1))
+        .await
+        .unwrap_err()
+        .to_string();
     assert!(
         error.contains("requires settlement") && error.contains("unknown"),
         "{error}"
@@ -178,7 +206,7 @@ async fn expired_lease_is_never_renewed_by_sealing() {
         })
         .unwrap();
     let calls = r.lock().unwrap().calls;
-    assert!(f.engine.seal_v2("job").await.is_err());
+    assert!(f.engine.seal_v2("job", &json!(1)).await.is_err());
     assert_eq!(r.lock().unwrap().calls, calls);
     assert!(!f.engine.get("job").unwrap().active());
     server.abort();
@@ -187,7 +215,7 @@ async fn expired_lease_is_never_renewed_by_sealing() {
 async fn large_valid_transcript_keeps_worker_and_operator_seal_responses_bounded() {
     let (f, r, server) = fixture().await;
     r.lock().unwrap().messages=(0..1400).map(|i|json!({"type":"assistant","id":format!("msg_{i}"),"model":{"providerID":"opencode","id":"big-pickle"},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"completed":1},"content":[]})).collect();
-    let seal = f.engine.seal_v2("job").await.unwrap();
+    let seal = f.engine.seal_v2("job", &json!(1)).await.unwrap();
     assert!(serde_json::to_vec(&seal).unwrap().len() < 2048);
     assert_eq!(seal["accounting_status"], "settled_zero");
     let status = f.engine.status(&f.engine.get("job").unwrap());
@@ -217,6 +245,39 @@ async fn malformed_completion_intent_fences_inference_and_is_never_certified() {
     let status = f.engine.status(&f.engine.get("job").unwrap());
     assert_eq!(status["execution_policy"]["models"], json!([]));
     assert_eq!(status["execution_seal"]["status"], "unknown");
-    assert!(f.engine.seal_v2("job").await.is_err());
+    assert!(f.engine.seal_v2("job", &json!(1)).await.is_err());
+    server.abort();
+}
+#[tokio::test]
+async fn post_fence_failed_or_changed_completion_can_never_be_sealed() {
+    for change in ["failed", "revision", "history"] {
+        let (f, r, server) = fixture().await;
+        {
+            let mut r = r.lock().unwrap();
+            r.change_after_info = r.info_reads + 3;
+            r.change_kind = change;
+        }
+        let error = f
+            .engine
+            .seal_v2("job", &json!(1))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("completion changed"), "{change}: {error}");
+        let status = f.engine.status(&f.engine.get("job").unwrap());
+        assert_eq!(status["execution_seal"]["status"], "fencing");
+        assert_eq!(status["execution_policy"]["models"], json!([]));
+        assert!(f.engine.get("job").unwrap().candidate.is_none());
+        server.abort();
+    }
+}
+#[tokio::test]
+async fn stale_owner_completion_revision_is_rejected_before_fencing() {
+    let (f, _, server) = fixture().await;
+    assert!(f.engine.seal_v2("job", &json!(2)).await.is_err());
+    assert_eq!(
+        f.engine.status(&f.engine.get("job").unwrap())["execution_seal"],
+        Value::Null
+    );
     server.abort();
 }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {awaitNativeCompletion} from './native-completion.mjs';
+import {awaitNativeCompletion,classifyNativeFailure} from './native-completion.mjs';
 import {readFile} from 'node:fs/promises';
 import {runInNewContext} from 'node:vm';
 const sid='owned',worktree='/work';
@@ -46,7 +46,21 @@ test('explicit owner stop and resource failure remain authoritative',async()=>{
 });
 test('completion retains the existing repeated-tool-failure recovery guard',async()=>{
   const f=fixture();f.options.toolContext=async()=>[{type:'assistant',content:Array.from({length:4},()=>({type:'tool',name:'read',state:{status:'error',error:{type:'tool.execution'}}}))}];
+  f.options.getSession=async()=>({id:sid,location:{directory:worktree},time:{updated:1}});
   await assert.rejects(awaitNativeCompletion(f.options),/Repeated native tool failures/);
+});
+test('quiet confirmation preserves terminal failure policy and sticky permission denials',async()=>{
+  const f=fixture();f.active=false;
+  const history=[{type:'assistant',content:Array.from({length:4},()=>({type:'tool',name:'read',state:{status:'error',error:{type:'tool.execution'}}}))}];
+  f.options.toolContext=async()=>history;
+  assert.equal((await awaitNativeCompletion(f.options)).outcome,'succeeded');
+  history[0].content[0].state.error={type:'permission.denied',message:'Permission denied'};
+  await assert.rejects(awaitNativeCompletion(f.options),/Permission denied/);
+});
+test('sealing auth and policy denials never become transport repair or quota fallback',()=>{
+  for(const text of ['Controller seal-v2 HTTP 401: unauthorized','Controller seal-v2 HTTP 403: forbidden timeout','HTTP status client error (401 Unauthorized)'])assert.equal(classifyNativeFailure(text,'native_sealing'),'denied');
+  for(const text of ['Permission denied','ownership changed','V2 accounting requires settlement: unknown','Native completion changed after admission fence'])assert.equal(classifyNativeFailure(text,'native_sealing'),'blocked');
+  for(const text of ['TypeError: fetch failed','Connection refused','Controller seal-v2 HTTP 503','Completion seal timed out'])assert.equal(classifyNativeFailure(text,'native_sealing'),'repair');
 });
 test('actual host seal transport outlasts two bounded observations; ordinary calls retain their budget',async()=>{
   const source=await readFile(new URL('./spark-continuous.mjs',import.meta.url),'utf8');

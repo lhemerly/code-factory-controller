@@ -461,7 +461,7 @@ impl Engine {
         let evidence = json!({"source":"opencode_v2_native_observation","runtime":"2.0.29","observed_at":now(),
             "identity":observed,"native_updated":info["time"]["updated"],
             "export_sha256":digest(serde_json::to_vec(exported)?),"inventory_count":seen.len(),"execution_record_count":messages.len(),
-            "quiet_checks":quiet,"no_descendants":true});
+            "quiet_checks":quiet,"no_descendants":true,"native_outcome":info["outcome"]});
         Ok(Observation {
             identity: observed,
             accounting,
@@ -596,6 +596,9 @@ impl Engine {
                 quiet,
             )
             .await?;
+        if let Some(seal) = self.v2_seal(job)? {
+            Self::require_same_completion(&seal, &observation)?;
+        }
         require_settled(&observation.accounting)
     }
     pub(crate) fn v2_seal(&self, job: &Job) -> Result<Option<Value>> {
@@ -622,6 +625,9 @@ impl Engine {
                 || seal["job_id"] != job.input.job_id
                 || seal["attempt_id"] != a.attempt_id
                 || seal["session_id"].as_str() != a.session_id.as_deref()
+                || seal["expected_native_updated"]
+                    .as_f64()
+                    .is_none_or(|v| !v.is_finite() || v <= 0.)
                 || !matches!(seal["status"].as_str(), Some("fencing" | "sealed"))
                 || stamp.len() > 64
                 || chrono::DateTime::parse_from_rfc3339(stamp).is_err()
@@ -645,18 +651,38 @@ impl Engine {
         json!({"version":seal["version"],"seal_id":seal["seal_id"],
             "status":seal["status"],"job_id":seal["job_id"],
             "attempt_id":seal["attempt_id"],"session_id":seal["session_id"],
-            "accounting_status":accounting})
+            "accounting_status":accounting,"expected_native_updated":seal["expected_native_updated"]})
+    }
+    fn require_same_completion(seal: &Value, observation: &Observation) -> Result<()> {
+        if observation.evidence["native_outcome"] != "succeeded"
+            || observation.evidence["native_updated"].as_f64()
+                != seal["expected_native_updated"].as_f64()
+            || (seal.get("before").is_some()
+                && observation.evidence["export_sha256"] != seal["before"]["export_sha256"])
+        {
+            bail!("Native completion changed after admission fence; preserve unaccepted source");
+        }
+        Ok(())
     }
     /// Host-only completion fence. Never interrupts healthy work or invents usage.
     /// pstack's existing model/request hooks consume the now-empty admission list.
-    pub async fn seal_v2(&self, id: &str) -> Result<Value> {
+    pub async fn seal_v2(&self, id: &str, expected_native_updated: &Value) -> Result<Value> {
+        if expected_native_updated
+            .as_f64()
+            .is_none_or(|v| !v.is_finite() || v <= 0.)
+        {
+            bail!("Native completion revision required");
+        }
         // Two 30-second observations plus lock/storage work fit inside this
         // operation budget; the host control transport allows 120 seconds.
-        tokio::time::timeout(Duration::from_secs(90), self.seal_v2_inner(id))
-            .await
-            .context("Completion seal timed out; preserve and reconcile its durable fence")?
+        tokio::time::timeout(
+            Duration::from_secs(90),
+            self.seal_v2_inner(id, expected_native_updated),
+        )
+        .await
+        .context("Completion seal timed out; preserve and reconcile its durable fence")?
     }
-    async fn seal_v2_inner(&self, id: &str) -> Result<Value> {
+    async fn seal_v2_inner(&self, id: &str, expected_native_updated: &Value) -> Result<Value> {
         let _gate = self.gate.lock().await;
         let mut job = self.get(id)?;
         let a = job
@@ -680,6 +706,7 @@ impl Engine {
             if prior["attempt_id"] != attempt
                 || prior["session_id"] != session
                 || prior["binding"] != binding
+                || prior["expected_native_updated"].as_f64() != expected_native_updated.as_f64()
             {
                 bail!("V2 completion seal identity changed");
             }
@@ -691,9 +718,14 @@ impl Engine {
                 .observe_v2(&job, &session, Some(&binding), true)
                 .await?;
             require_settled(&observation.accounting)?;
+            Self::require_same_completion(
+                &json!({"expected_native_updated":expected_native_updated}),
+                &observation,
+            )?;
             let intent = json!({"version":1,"seal_id":new_id(),"job_id":id,
                 "attempt_id":attempt,"session_id":session,"binding":binding,
-                "status":"fencing","requested_at":now(),"before":observation.evidence});
+                "status":"fencing","requested_at":now(),"before":observation.evidence,
+                "expected_native_updated":expected_native_updated});
             self.store.transaction(|tx| {
                 let mut current = Store::load(tx, id)?;
                 if current.revision != job.revision
@@ -725,6 +757,7 @@ impl Engine {
             .observe_v2(&job, &session, Some(&binding), true)
             .await?;
         require_settled(&observation.accounting)?;
+        Self::require_same_completion(&seal, &observation)?;
         if seal["status"] == "sealed" {
             let current = self.get(id)?;
             if current.revision != job.revision || !current.active() || current.state != "running" {

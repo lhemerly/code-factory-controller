@@ -260,7 +260,7 @@ async fn operator(
             "agy-reconcile" => serde_json::to_value(s.engine.reconcile_agy(id).await?)?,
             "local-session" => serde_json::to_value(s.engine.local_session(id)?)?,
             "abort" => serde_json::to_value(s.engine.abort_worker(id).await?)?,
-            "seal-v2" => s.engine.seal_v2(id).await?,
+            "seal-v2" => s.engine.seal_v2(id, &body["expected_native_updated"]).await?,
             "heartbeat" => {
                 s.engine
                     .heartbeat(id, body["attempt_id"].as_str().unwrap_or(""))?;

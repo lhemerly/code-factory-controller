@@ -44,7 +44,7 @@ fn fixture(phase: &str, kind: &str, fence: Option<&str>) -> Result<(TempDir, Dis
     if fence == Some("pause") {
         fs::write(r.join("PAUSE"), "explicit user pause\n")?;
     }
-    let goal = json!({"id":"goal","root":r,"repository":r.join("repository"),"cycle_command":["node",cycle],"admission_mode":"continuous","acceptance":{}});
+    let goal = json!({"id":"goal","root":r,"repository":r.join("repository"),"cycle_command":["node",cycle],"admission_mode":"continuous","acceptance":{"required_evidence":["fixture"],"completion_checks":[{"id":"unmet","argv":["/usr/bin/false"],"evidence_type":"fixture","timeout_seconds":5}]}});
     let manifest = json!({"version":1,"worker_slots":1,"controller":BIN,"state":temp.path().join("state.json"),"pool_lock":temp.path().join("pool.lock"),"trusted_files":{helper.to_str().unwrap():sha(&helper)?,cycle.to_str().unwrap():sha(&cycle)?,BIN:sha(std::path::Path::new(BIN))?},"goals":[goal]});
     let mut d = Dispatcher::open(manifest, &temp.path().join("state.json"))?;
     d.executable = PathBuf::from(BIN);

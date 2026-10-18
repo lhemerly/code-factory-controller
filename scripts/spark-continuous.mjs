@@ -8,10 +8,10 @@ import {createServer} from 'node:net';
 import {OpenCode} from './opencode-v2-client.mjs';
 import {buildResearchContext,createCycleDirectory,commitSubject,captureVerificationDiagnostics} from './research-context.mjs';
 import {OwnershipLease,observeResearch,RepeatedToolFailure} from './continuous-ownership.mjs';
-import {awaitNativeCompletion} from './native-completion.mjs';
+import {awaitNativeCompletion,classifyNativeFailure} from './native-completion.mjs';
 import {sandbox,workerPermissions} from './spark-sandbox.mjs';
 import {waitForFactoryPlugin} from './native-plugin-readiness.mjs';
-import {freeModels,classify,route,failure,recoveryAction,replacementAllowed,approvedScope} from './free-model-policy.mjs';
+import {freeModels,route,failure,recoveryAction,replacementAllowed,approvedScope} from './free-model-policy.mjs';
 const oneCycle=process.argv.includes('--one-cycle');
 const root=resolve(process.argv[2]),cfg=JSON.parse(await readFile(resolve(root,'supervisor.json')));
 const goal=JSON.parse(await readFile(resolve(root,'goal.json'))),repo=resolve(root,'repository');
@@ -69,7 +69,7 @@ async function runCycle(sequence){
  async function launch(binary,args,vars,cwd,ready){const p=spawn(binary,args,{cwd,env:vars,stdio:['ignore','pipe','pipe']});processes.push(p);let output='';const append=b=>output=(output+b.toString()).slice(-1048576);p.stdout.on('data',append);p.stderr.on('data',append);p._log=()=>red(output);for(let i=0;i<300;i++){const found=ready(output);if(found)return{p,...found};if(p.exitCode!==null||p.signalCode!==null)throw Error('Process startup failed: '+red(output));if(shutdown)throw Error('Operator stopping');await delay(100)}throw Error('Process startup timeout')}
  async function stop(p){if(!p||p.exitCode!==null||p.signalCode!==null)return;const ended=new Promise(ok=>p.once('exit',ok));p.kill('SIGTERM');await Promise.race([ended,delay(8000)]);if(p.exitCode===null&&p.signalCode===null){p.kill('SIGKILL');await ended}}
  let controllerURL,nativeURL;
- async function op(name,body={}){const res=await fetch(controllerURL+'/operator/'+name,{method:'POST',headers:{authorization:'Bearer '+operator,'content-type':'application/json'},body:JSON.stringify({job_id:job,...body}),signal:AbortSignal.timeout(name==='seal-v2'?120000:40000)});const value=await res.json();await atomic(resolve(dir,'operator-'+name+'.json'),value);if(!res.ok)throw Error('Controller '+name+': '+JSON.stringify(value));return value}
+ async function op(name,body={}){const res=await fetch(controllerURL+'/operator/'+name,{method:'POST',headers:{authorization:'Bearer '+operator,'content-type':'application/json'},body:JSON.stringify({job_id:job,...body}),signal:AbortSignal.timeout(name==='seal-v2'?120000:40000)});const value=await res.json();await atomic(resolve(dir,'operator-'+name+'.json'),value);if(!res.ok)throw Error('Controller '+name+' HTTP '+res.status+': '+JSON.stringify(value));return value}
  async function startNative(location,factory=false){
   const start=await launch('/usr/bin/bwrap',[...sandbox(cfg,repo,location,profile,protectedPaths),'serve','--hostname','127.0.0.1','--port',new URL(nativeURL).port],{...nativeEnv,...(factory?{PSTACK_FACTORY_URL:controllerURL,PSTACK_FACTORY_PROJECT:cfg.project_id??'spark-full-scroll',PSTACK_FACTORY_TOKEN:worker}:{})},location,o=>{const p=/server password (\S+)/.exec(o);return o.includes('server listening on')&&p?{password:p[1]}:undefined});native=start.p;password=start.password;
   client=OpenCode.make({baseUrl:nativeURL,fetch:(u,o={})=>fetch(u,{...o,signal:AbortSignal.any([AbortSignal.timeout(30000),...(o.signal?[o.signal]:[])])}),headers:{authorization:'Basic '+Buffer.from('opencode:'+password).toString('base64'),'x-opencode-directory':location}});
@@ -127,7 +127,7 @@ async function runCycle(sequence){
   await lease.stop();await lease.tick(true);
   // Persistently fence new model requests through the existing pstack authorizer,
   // then independently re-observe quiet execution/accounting before touching Git.
-  phase='native_sealing';await cycleSave();out.native_seal=await op('seal-v2');
+  phase='native_sealing';await cycleSave();out.native_seal=await op('seal-v2',{expected_native_updated:child.time.updated});
   phase='verification';out.status='verifying';await cycleSave();
   // Commit only approved tracked/additional source paths; never ignored data/native configuration.
   const changed=git(work,'status','--porcelain','--untracked-files=all');out.diff_status=changed;
@@ -154,7 +154,7 @@ async function runCycle(sequence){
   if(sha(await readFile(done.delivery.destination))!==done.delivery.sha256)throw Error('Delivered archive hash mismatch');
   out.acceptance=done;out.status='accepted';await atomic(resolve(dir,'accepted.json'),done);
   try{out.scientific_blocker=(await readFile(resolve(work,'docs/BLOCKED.md'),'utf8')).slice(0,4000)}catch{}
- }catch(e){out.error=red(String(e)).slice(0,20000);out.failure_kind=e instanceof RepeatedToolFailure?'repair':classify(out.error,phase==='native_sealing'?'verification':phase);if(e instanceof RepeatedToolFailure)out.tool_failure=e.observation;out.status='failed';}
+ }catch(e){out.error=red(String(e)).slice(0,20000);out.failure_kind=e instanceof RepeatedToolFailure?'repair':classifyNativeFailure(out.error,phase);if(e instanceof RepeatedToolFailure)out.tool_failure=e.observation;out.status='failed';}
  finally{
   if(lease)await lease.stop();out.phase=phase;
   if(child&&client){try{const s=await client.session.get({sessionID:child.id});out.usage={model:s.model??null,cost:s.cost??null,tokens:s.tokens??null};out.native_session=safe(s);await atomic(resolve(dir,'native-session-final.json'),safe(s));await atomic(resolve(dir,'native-context-final.json'),safe(await client.session.context({sessionID:child.id})))}catch(e){out.accounting_error=red(String(e));out.usage??={cost:null,tokens:null,model:null}}}
