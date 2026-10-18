@@ -813,14 +813,58 @@ impl Dispatcher {
             .get("base")
             .or(status.get("base"))
             .or(g.get("initial_base"));
+        let mut recovery_argv = vec![
+            "node".into(),
+            helper.to_string_lossy().into_owned(),
+            root(g)?.to_string_lossy().into_owned(),
+            string(&self.m, "controller")?.into(),
+        ];
+        let cycle = list(g, "cycle_command")?;
+        if cycle.first().and_then(Value::as_str) == Some("/usr/bin/env") {
+            let assignments = cycle
+                .iter()
+                .skip(1)
+                .map(|v| v.as_str().context("cycle argument"))
+                .collect::<Result<Vec<_>>>()?;
+            let client = assignments
+                .iter()
+                .take_while(|a| a.contains('='))
+                .filter_map(|a| a.strip_prefix("FACTORY_OPENCODE_V2_CLIENT="))
+                .collect::<Vec<_>>();
+            ensure!(client.len() <= 1, "Ambiguous selected native client");
+            if let Some(client) = client.first() {
+                let selected = resolve(Path::new(client))?;
+                ensure!(
+                    Path::new(client).is_absolute()
+                        && self.m["trusted_files"]
+                            .as_object()
+                            .is_some_and(|ps| ps.iter().any(|(p, h)| resolve(Path::new(p))
+                                .ok()
+                                .as_ref()
+                                == Some(&selected)
+                                && crate::recovery::sha(Path::new(p)).ok().as_deref()
+                                    == h.as_str())),
+                    "Recovery native client lacks exact owner pin"
+                );
+                if let Some(node) = assignments.iter().find(|a| !a.contains('=')) {
+                    ensure!(
+                        Path::new(node).is_absolute(),
+                        "Selected native host node must be absolute"
+                    );
+                    recovery_argv[0] = (*node).to_string();
+                }
+                recovery_argv.splice(
+                    0..0,
+                    [
+                        "/usr/bin/env".to_string(),
+                        format!("FACTORY_OPENCODE_V2_CLIENT={client}"),
+                    ],
+                );
+            }
+        }
         let plan = crate::supervisor::Plan {
             execution_id: id.clone(),
-            argv: vec![
-                "node".into(),
-                helper.to_string_lossy().into_owned(),
-                root(g)?.to_string_lossy().into_owned(),
-                string(&self.m, "controller")?.into(),
-            ],
+            argv: recovery_argv,
             cwd: root(g)?,
             seconds: 600,
             stdout: Some(dir.join(format!("{id}.stdout"))),
@@ -1206,9 +1250,12 @@ pub fn run_cli(options: Options) -> Result<Value> {
         Ok(lock) => lock,
         Err(_) if stopped() => {
             if let Some(q) = &queue {
-                save(
-                    &q.root.join("owner.json"),
-                    &json!({"state":"stopped","process":null}),
+                write_owner(
+                    q,
+                    &options.manifest,
+                    &m,
+                    &std::env::current_exe()?,
+                    "stopped",
                 )?;
             }
             return Ok(json!({"status":"stopped_before_boundary"}));
@@ -1231,6 +1278,10 @@ pub fn run_cli(options: Options) -> Result<Value> {
             m = saved["manifest"].clone();
         }
     }
+    ensure!(
+        resolve(&state_path)? == resolve(&path(&m, "state")?)?,
+        "Manifest state path changed while waiting for ownership; preserve both states"
+    );
     if let Some(migration) = &options.policy_migration {
         migrate_launch_policy(&m, &state_path, migration)?;
     }
@@ -1250,27 +1301,10 @@ pub fn run_cli(options: Options) -> Result<Value> {
     d.recover_and_audit()?;
     if options.resume {
         let old = &d.m["legacy_idle_owner"];
-        if same_process(old) {
-            let pid = old["pid"].as_u64().context("legacy owner PID required")?;
-            let actual =
-                identity(pid as u32).context("legacy owner disappeared before identity check")?;
-            let first = list(&d.m, "goals")?
-                .first()
-                .context("legacy owner requires one goal")?;
-            let status = d.read_status(first)?;
-            let argv = fs::read(format!("/proc/{pid}/cmdline"))?;
-            let args = argv.split(|b| *b == 0).collect::<Vec<_>>();
-            ensure!(
-                actual["uid"].as_u64() == Some(unsafe { libc::getuid() } as u64)
-                    && status["current"].is_null()
-                    && status["status"] == "paused"
-                    && list(old, "required_argv")?
-                        .iter()
-                        .all(|a| a.as_str().is_some_and(|a| args.contains(&a.as_bytes()))),
-                "Legacy owner is not the exact idle paused supervisor"
-            );
-            crate::queue_handoff::retire_idle(old, &root(first)?.join("status.json"))?;
-        }
+        ensure!(
+            !same_process(old),
+            "Live legacy coordinator lacks a qualified canonical handoff; preserve it for explicit reconciliation"
+        );
         for goal in list(&d.m, "goals")?.clone() {
             let gs = &d.s["goals"][string(&goal, "id")?];
             if !gs["admission_exhausted"].is_null()
@@ -1355,10 +1389,7 @@ pub fn run_cli(options: Options) -> Result<Value> {
     drop(receiver);
     if let Some(q) = &queue {
         q::unlink(&q.socket)?;
-        save(
-            &q.root.join("owner.json"),
-            &json!({"state":"stopped","process":null}),
-        )?
+        write_owner(q, &options.manifest, &d.m, &d.executable, "stopped")?
     }
     if stopped() { Ok(d.s.clone()) } else { result }
 }
@@ -1384,7 +1415,12 @@ fn write_owner(
     executable: &Path,
     state: &str,
 ) -> Result<()> {
-    let record = json!({"state":state,"process":identity(std::process::id()),
+    let process = if state == "stopped" {
+        None
+    } else {
+        identity(std::process::id())
+    };
+    let record = json!({"state":state,"process":process,
         "dispatcher_sha256":crate::recovery::sha(executable)?,
         "binding":owner_binding(manifest_path,&queue.root,manifest,executable)?});
     let p = queue.root.join("owner.json");
@@ -1395,12 +1431,25 @@ fn write_owner(
 }
 /// Explicit owner-only resume path; called by the CLI or exact owned handoff pauses.
 pub fn resume_goal(manifest: &Value, g: &Value) -> Result<()> {
-    resume_goal_mode(manifest, g, true)
+    resume_goal_mode(manifest, g, true, None)
 }
-pub(crate) fn resume_after_handoff(manifest: &Value, g: &Value) -> Result<()> {
-    resume_goal_mode(manifest, g, false)
+pub(crate) fn resume_after_handoff(manifest: &Value, g: &Value, transaction: &str) -> Result<()> {
+    uuid::Uuid::parse_str(transaction)?;
+    resume_goal_mode(
+        manifest,
+        g,
+        false,
+        Some(&format!(
+            "Cooperative queue handoff transaction {transaction}"
+        )),
+    )
 }
-fn resume_goal_mode(manifest: &Value, g: &Value, clear_pause: bool) -> Result<()> {
+fn resume_goal_mode(
+    manifest: &Value,
+    g: &Value,
+    clear_pause: bool,
+    handoff_reason: Option<&str>,
+) -> Result<()> {
     let r = root(g)?;
     ensure!(
         clear_pause || !r.join("PAUSE").exists(),
@@ -1467,7 +1516,7 @@ fn resume_goal_mode(manifest: &Value, g: &Value, clear_pause: bool) -> Result<()
         return Ok(());
     }
     if status["status"] == "paused" || r.join("PAUSE").exists() {
-        let reason = "Owner explicitly launched the shared foreground dispatcher; inspect prior owned-stop evidence and continue preserved checkpoints";
+        let reason = handoff_reason.unwrap_or("Owner explicitly launched the shared foreground dispatcher; inspect prior owned-stop evidence and continue preserved checkpoints");
         if clear_pause {
             crate::recovery::spark_resume(&r, reason)?;
         } else {

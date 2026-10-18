@@ -287,7 +287,12 @@ impl Transaction {
             file.write_all(text.as_bytes())?;
             file.sync_all()?;
             fs::File::open(root(goal)?)?.sync_all()?;
-            let status = read(&root(goal)?.join("status.json"))?;
+            let status_path = root(goal)?.join("status.json");
+            let status = if status_path.exists() {
+                read(&status_path)?
+            } else {
+                json!({"sequence":0,"status":"waiting","current":null})
+            };
             let boundary = if state["current"]["goal"] == name
                 && state["current"]["expected_sequence"].is_u64()
             {
@@ -296,7 +301,7 @@ impl Transaction {
                 status["sequence"].clone()
             };
             ensure!(boundary.is_u64(), "Handoff admission boundary unknown");
-            self.record["pauses"][name] = json!({"root":resolve(&root(goal)?)?,"stage":stage,"released":released,"nonce":nonce,"text":text,"status":"planned","expected_sequence":boundary});
+            self.record["pauses"][name] = json!({"root":resolve(&root(goal)?)?,"stage":stage,"released":released,"nonce":nonce,"text":text,"status":"planned","observed_sequence":status["sequence"],"expected_sequence":boundary});
             self.record["owned_pauses"][name] = json!(text);
             self.persist()?; // Stage identity is durable before the atomic link.
         }
@@ -551,7 +556,13 @@ pub fn handoff_resume_allowed(
         return Ok(matches!(gs["state"].as_str(), Some("ready" | "waiting")));
     }
     Ok(entry["expected_sequence"].is_u64()
-        && entry["expected_sequence"] == status["sequence"]
+        && (entry["expected_sequence"] == status["sequence"]
+            || (entry["observed_sequence"].is_u64()
+                && entry["observed_sequence"] == status["sequence"]
+                && entry["observed_sequence"]
+                    .as_u64()
+                    .and_then(|n| n.checked_add(1))
+                    == entry["expected_sequence"].as_u64()))
         && status["pause_observation"]["text_sha256"]
             == json!(crate::model::digest(string(entry, "text")?))
         && status["pause_observation"]["transaction"] == *transaction
@@ -560,6 +571,35 @@ pub fn handoff_resume_allowed(
             .is_some_and(|t| uuid::Uuid::parse_str(t).is_ok())
         && status["pause_observation"]["sequence"] == status["sequence"]
         && status["pause_reason"] == "Operator PAUSE file")
+}
+pub fn handoff_resume_replayed(
+    gs: &Value,
+    status: &Value,
+    entry: &Value,
+    transaction: &Value,
+) -> Result<bool> {
+    let intent = &entry["resume_intent"];
+    if intent.is_null() {
+        return Ok(false);
+    }
+    let before = &intent["before"];
+    ensure!(
+        intent["transaction"] == *transaction && intent["before_digest"] == digest(before),
+        "Handoff resume intent binding changed"
+    );
+    Ok(handoff_resume_allowed(gs, before, entry, transaction)?
+        && status["status"] == "waiting"
+        && status["pause_reason"].is_null()
+        && status["operator_resume"]["reason"]
+            == json!(format!(
+                "Cooperative queue handoff transaction {}",
+                string(intent, "transaction")?
+            ))
+        && status["operator_resume"]["at"]
+            .as_str()
+            .is_some_and(|v| chrono::DateTime::parse_from_rfc3339(v).is_ok())
+        && q::without(status, &["status", "pause_reason", "operator_resume"])
+            == q::without(before, &["status", "pause_reason", "operator_resume"]))
 }
 /// Refuse a foreign/legacy coordinator before any pause publication or signal.
 pub fn validate_owner(
@@ -580,8 +620,14 @@ pub fn validate_owner(
         "Coordinator launch binding changed or belongs to another manifest/state/pool/source"
     );
     ensure!(
-        manifest["trusted_files"].get(source.to_str().context("source UTF-8")?)
-            == Some(&b["source_sha256"]),
+        manifest["trusted_files"]
+            .as_object()
+            .is_some_and(
+                |pins| pins.iter().any(|(p, h)| resolve(Path::new(p)).ok().as_ref()
+                    == Some(&source)
+                    && h == &b["source_sha256"]
+                    && crate::recovery::sha(Path::new(p)).ok().as_deref() == h.as_str())
+            ),
         "Coordinator source is not pinned by this manifest"
     );
     if d::same_process(&owner["process"]) {
@@ -702,12 +748,31 @@ pub fn run_cli(a: Options) -> Result<()> {
         for g in &detached {
             let name = string(g, "id")?;
             let gs = &dispatcher.s["goals"][name];
-            let status = read(&root(g)?.join("status.json"))?;
+            let status_path = root(g)?.join("status.json");
+            let status = if status_path.exists() {
+                read(&status_path)?
+            } else {
+                json!({"sequence":0,"status":"waiting","current":null})
+            };
             let entry = &transaction.record["pauses"][name];
             let resume_prepared = !root(g)?.join("PAUSE").exists()
-                && handoff_resume_allowed(gs, &status, entry, &transaction.record["transaction"])?;
+                && (handoff_resume_allowed(
+                    gs,
+                    &status,
+                    entry,
+                    &transaction.record["transaction"],
+                )? || handoff_resume_replayed(
+                    gs,
+                    &status,
+                    entry,
+                    &transaction.record["transaction"],
+                )?);
             if resume_prepared {
-                d::resume_after_handoff(&manifest, g)?;
+                if transaction.record["pauses"][name]["resume_intent"].is_null() {
+                    transaction.record["pauses"][name]["resume_intent"] = json!({"transaction":transaction.record["transaction"],"before_digest":digest(&status),"before":status});
+                    transaction.persist()?;
+                }
+                d::resume_after_handoff(&manifest, g, string(&transaction.record, "transaction")?)?;
                 dispatcher.s["goals"][name]["state"] = json!("ready");
             } else if root(g)?.join("PAUSE").exists() {
                 dispatcher.s["goals"][name]["state"] = json!("paused");

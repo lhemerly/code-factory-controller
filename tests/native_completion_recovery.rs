@@ -46,6 +46,33 @@ fn fixture(phase: &str, kind: &str, fence: Option<&str>) -> Result<(TempDir, Dis
     }
     let goal = json!({"id":"goal","root":r,"repository":r.join("repository"),"cycle_command":["node",cycle],"admission_mode":"continuous","acceptance":{"required_evidence":["fixture"],"completion_checks":[{"id":"unmet","argv":["/usr/bin/false"],"evidence_type":"fixture","timeout_seconds":5}]}});
     let manifest = json!({"version":1,"worker_slots":1,"controller":BIN,"state":temp.path().join("state.json"),"pool_lock":temp.path().join("pool.lock"),"trusted_files":{helper.to_str().unwrap():sha(&helper)?,cycle.to_str().unwrap():sha(&cycle)?,BIN:sha(std::path::Path::new(BIN))?},"goals":[goal]});
+    let mut manifest = manifest;
+    if fence == Some("client") {
+        let client = temp.path().join("selected-client.mjs");
+        fs::write(&client, "export const publicFixture=true;\n")?;
+        let output = std::process::Command::new("node")
+            .args(["-p", "process.execPath"])
+            .output()?;
+        anyhow::ensure!(output.status.success(), "fixture node resolution");
+        let node = String::from_utf8(output.stdout)?.trim().to_string();
+        fs::write(
+            &helper,
+            format!(
+                "import fs from 'node:fs';if(process.env.FACTORY_OPENCODE_V2_CLIENT!=={})process.exit(17);fs.writeFileSync({},'selected-client-observed');process.exit(7);",
+                serde_json::to_string(&client)?,
+                serde_json::to_string(&marker)?
+            ),
+        )?;
+        manifest["trusted_files"][helper.to_str().unwrap()] = json!(sha(&helper)?);
+        manifest["trusted_files"][client.to_str().unwrap()] = json!(sha(&client)?);
+        manifest["trusted_files"][&node] = json!(sha(std::path::Path::new(&node))?);
+        manifest["goals"][0]["cycle_command"] = json!([
+            "/usr/bin/env",
+            format!("FACTORY_OPENCODE_V2_CLIENT={}", client.display()),
+            node,
+            cycle
+        ]);
+    }
     let mut d = Dispatcher::open(manifest, &temp.path().join("state.json"))?;
     d.executable = PathBuf::from(BIN);
     Ok((temp, d, marker))
@@ -87,5 +114,17 @@ fn new_phases_preserve_denial_pause_live_owner_and_cleanup_fences() -> Result<()
         );
         assert_eq!(d.s["goals"]["goal"]["milestones"], json!([]));
     }
+    Ok(())
+}
+
+#[test]
+fn selected_pinned_client_survives_actual_recovery_environment_boundaries() -> Result<()> {
+    let (_tmp, mut d, marker) = fixture("native_sealing", "repair", Some("client"))?;
+    assert!(
+        d.step().is_err(),
+        "fixture helper must fail without acceptance"
+    );
+    assert_eq!(fs::read_to_string(marker)?, "selected-client-observed");
+    assert_eq!(d.s["goals"]["goal"]["milestones"], json!([]));
     Ok(())
 }

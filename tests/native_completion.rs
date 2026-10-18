@@ -313,7 +313,7 @@ async fn completion_sealing_renews_a_live_short_lease_before_slow_observations()
     let expiry =
         chrono::DateTime::parse_from_rfc3339(&job.attempt.as_ref().unwrap().lease_expires_at)
             .unwrap();
-    assert!((expiry - chrono::Utc::now()).num_seconds() >= 59);
+    assert!((expiry.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_seconds() >= 59);
     server.abort();
 }
 #[tokio::test]

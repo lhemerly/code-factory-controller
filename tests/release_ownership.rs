@@ -85,3 +85,57 @@ fn coordinator_binding_rejects_foreign_manifest_state_pool_queue_source_and_lega
     assert!(validate_owner(&legacy, &manifest, &queue, &m).is_err());
     Ok(())
 }
+
+#[test]
+fn prevented_admission_and_resume_crash_are_bound_to_the_same_transaction() -> Result<()> {
+    use code_factory_controller::goal_state::digest as json_digest;
+    use code_factory_controller::queue_handoff::handoff_resume_replayed;
+    let txn = json!("123456781234123412341234567890ab");
+    let text = "owned maintenance pause\n";
+    let mut entry = json!({"text":text,"observed_sequence":4,"expected_sequence":5});
+    let gs = json!({"state":"paused"});
+    let before = json!({"sequence":4,"base":"fixed","current":null,"status":"paused","pause_reason":"Operator PAUSE file","pause_observation":{"sequence":4,"transaction":txn,"text_sha256":digest(text)}});
+    assert!(handoff_resume_allowed(&gs, &before, &entry, &txn)?);
+    entry["resume_intent"] =
+        json!({"transaction":txn,"before":before,"before_digest":json_digest(&before)});
+    let mut after = before.clone();
+    after["status"] = json!("waiting");
+    after["pause_reason"] = Value::Null;
+    after["operator_resume"] = json!({"at":"2026-10-18T10:00:00Z","reason":format!("Cooperative queue handoff transaction {}",txn.as_str().unwrap())});
+    assert!(!handoff_resume_allowed(&gs, &after, &entry, &txn)?);
+    assert!(handoff_resume_replayed(&gs, &after, &entry, &txn)?);
+    for key in ["base", "sequence", "current"] {
+        let mut changed = after.clone();
+        changed[key] = json!("different");
+        assert!(!handoff_resume_replayed(&gs, &changed, &entry, &txn)?);
+    }
+    let mut wrong = after.clone();
+    wrong["operator_resume"]["reason"] = json!("Unrelated manual resume");
+    assert!(!handoff_resume_replayed(&gs, &wrong, &entry, &txn)?);
+    assert!(!handoff_resume_replayed(
+        &json!({"state":"paused","admission_exhausted":{"sequence":4}}),
+        &after,
+        &entry,
+        &txn
+    )?);
+    let mut stale = before;
+    stale["sequence"] = json!(6);
+    assert!(!handoff_resume_allowed(&gs, &stale, &entry, &txn)?);
+    Ok(())
+}
+#[test]
+fn canonical_owner_pin_accepts_the_same_installed_symlink_and_terminal_identity() -> Result<()> {
+    let t = tempfile::tempdir()?;
+    let source = std::env::current_exe()?;
+    let link = t.path().join("installed-cli");
+    std::os::unix::fs::symlink(&source, &link)?;
+    let h = sha(&source)?;
+    let m = json!({"state":t.path().join("state.json"),"pool_lock":t.path().join("pool.lock"),"trusted_files":{link.to_str().unwrap():h}});
+    let manifest = t.path().join("manifest.json");
+    let queue = t.path().join("q");
+    fs::create_dir(&queue)?;
+    let binding = owner_binding(&manifest, &queue, &m, &source)?;
+    let owner = json!({"state":"stopped","process":null,"dispatcher_sha256":h,"binding":binding});
+    validate_owner(&owner, &manifest, &queue, &m)?;
+    Ok(())
+}
