@@ -1422,7 +1422,9 @@ fn resume_goal_mode(manifest: &Value, g: &Value, clear_pause: bool) -> Result<()
         }
     }
     let pause_reason = status["pause_reason"].as_str().unwrap_or("");
-    if g["admission_mode"] == "one_cycle" && pause_reason.contains("Bounded implementation cycle ended") {
+    if g["admission_mode"] == "one_cycle"
+        && pause_reason.contains("Bounded implementation cycle ended")
+    {
         return Ok(());
     }
     if status["status"] == "paused" || r.join("PAUSE").exists() {
