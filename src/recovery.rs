@@ -451,7 +451,10 @@ pub fn audit_permission_block_resolution_with(
     ensure!(
         out.get("status").and_then(Value::as_str) == Some("failed")
             && out.get("failure_kind").and_then(Value::as_str) == Some("blocked")
-            && out.get("phase").and_then(Value::as_str) == Some("native")
+            && matches!(
+                out.get("phase").and_then(Value::as_str),
+                Some("native" | "native_shells" | "native_completion")
+            )
             && out.get("cleanup_confirmed").and_then(Value::as_bool) == Some(true)
             && out.get("fence_error").is_none_or(Value::is_null),
         "Not a confirmed failed native block"
@@ -1325,7 +1328,10 @@ pub fn audit_owner_interruption_with(
     ensure!(
         out.get("status").and_then(Value::as_str) == Some("failed")
             && out.get("failure_kind").and_then(Value::as_str) == Some("blocked")
-            && out.get("phase").and_then(Value::as_str) == Some("native")
+            && matches!(
+                out.get("phase").and_then(Value::as_str),
+                Some("native" | "native_shells" | "native_completion" | "native_sealing")
+            )
             && out.get("error").and_then(Value::as_str) == Some("Error: Operator stopping"),
         "Not an owner-interrupted native attempt"
     );

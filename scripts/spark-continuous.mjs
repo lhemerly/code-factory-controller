@@ -118,6 +118,7 @@ async function runCycle(sequence){
   phase='native';out.status='running';await cycleSave();await event('native_started',{sequence,model:out.model,worktree:work,job,session:child.id});
   await client.session.command({sessionID:parent.id,name:'pstack-factory-start',text:'cycle-'+sequence});
   child=await observeResearch({get:()=>client.session.get({sessionID:child.id}),toolContext:()=>client.session.context({sessionID:child.id}),checkpoint:async session=>{out.native_session=safe(session);await atomic(resolve(dir,'native-session.json'),safe(session));await cycleSave()},resources:async()=>{if(!await diskOK())throw Error('Disk resource limit reached')},lease,shouldStop:()=>shutdown,sleep:delay});
+  while(!shutdown){
   phase='native_completion';await cycleSave();
   child=await awaitNativeCompletion({sessionID:child.id,worktree:work,getSession:()=>client.session.get({sessionID:child.id}),getActive:()=>client.session.active(),getInbox:()=>client.session.inbox.list({sessionID:child.id}),getShells:()=>client.shell.list({location:{directory:work}}),toolContext:()=>client.session.context({sessionID:child.id}),checkpoint:observation=>atomic(resolve(dir,'native-completion.json'),safe(observation)),resources:async()=>{if(!await diskOK())throw Error('Disk resource limit reached')},lease,shouldStop:()=>shutdown,sleep:delay});
   const context=safe(await client.session.context({sessionID:child.id}));await atomic(resolve(dir,'native-context.json'),context);out.native_session=safe(child);out.usage={cost:child.cost??null,tokens:child.tokens??null,model:child.model??null};
@@ -128,6 +129,14 @@ async function runCycle(sequence){
   // Persistently fence new model requests through the existing pstack authorizer,
   // then independently re-observe quiet execution/accounting before touching Git.
   phase='native_sealing';await cycleSave();out.native_seal=await op('seal-v2',{expected_native_updated:child.time.updated});
+  // The controller renewed only this live attempt while sealing. Re-establish
+  // host ownership before any Git or verification effect.
+  await lease.tick(true);
+  if(out.native_seal.status==='sealed')break;
+  if(out.native_seal.status!=='observing')throw Error('Native seal response unknown');
+  lease.start();
+  }
+  if(shutdown)throw Error('Operator stopping');
   phase='verification';out.status='verifying';await cycleSave();
   // Commit only approved tracked/additional source paths; never ignored data/native configuration.
   const changed=git(work,'status','--porcelain','--untracked-files=all');out.diff_status=changed;
@@ -212,10 +221,17 @@ if(cfg.resume_checkpoint&&!state.source_resume){
 }
 if(state.status==='paused')await pause(state.pause_reason??'Operator review required');
 while(!shutdown){
- if(await access(resolve(root,'PAUSE')).then(()=>true,()=>false)){await pause('Operator PAUSE file');break}
+ if(await access(resolve(root,'PAUSE')).then(()=>true,()=>false)){
+  // Bind this pause to the current admission boundary, never to a cached status.
+  const f=await open(resolve(root,'PAUSE'),'r');try{
+   const text=await f.readFile('utf8'),transaction=text.match(/^Cooperative queue handoff \d+; transaction ([a-f0-9]{32}); /)?.[1];
+   state.pause_observation={sequence:state.sequence,text_sha256:sha(text),transaction:transaction??null};
+  }finally{await f.close()}
+  await pause('Operator PAUSE file');break
+ }
  if(!await diskOK()){await pause('Disk resource limit reached; no scientific artifacts deleted');break}
 
- state.sequence++;state.status='running';await persist();const out=await runCycle(state.sequence);
+ delete state.pause_observation;state.sequence++;state.status='running';await persist();const out=await runCycle(state.sequence);
  if(out.status==='accepted'||out.status==='all_free_unavailable'||replacementAllowed(out))state.current=null;state.last_cycle={sequence:out.sequence,status:out.status,result:resolve(root,'cycles',String(out.sequence).padStart(6,'0'),'result.json')};
  if(out.status==='accepted'){
   state.base=out.acceptance.integrated_commit;state.accepted.push({job:out.job_id,commit:state.base,receipt:out.acceptance.active_verification_receipt.verification_id});state.repair_count=0;delete state.continuation;await event('accepted',{sequence:out.sequence,commit:state.base,goal_status:'unresolved'});if(out.scientific_blocker){delete state.continuation;await event('scientific_limitation',{sequence:out.sequence,claim:out.scientific_blocker.slice(0,1200),goal_status:'unresolved'});}

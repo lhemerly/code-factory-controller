@@ -857,6 +857,7 @@ pub fn retry_goals(queue: &Queue, m: &Value, s: &mut Value, state_path: &Path) -
         let name = string(g, "id")?;
         s["goals"][name]["state"] = json!("ready");
         s["goals"][name]["reason"] = Value::Null;
+        s["goals"][name]["admission_exhausted"] = Value::Null;
         s["cursor"] = json!(index);
         push(s, "queue_retries", item.clone())?;
         save(state_path, s)?;

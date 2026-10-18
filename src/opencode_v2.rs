@@ -7,6 +7,19 @@ use std::{collections::HashSet, path::Path, time::Duration};
 
 pub const MODE: &str = "opencode_v2";
 
+// A known continuation is retryable only before the durable admission fence.
+#[derive(Debug)]
+struct CompletionPending(&'static str);
+impl std::fmt::Display for CompletionPending {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+impl std::error::Error for CompletionPending {}
+fn pending(reason: &'static str) -> anyhow::Error {
+    CompletionPending(reason).into()
+}
+
 struct Native {
     client: reqwest::Client,
     url: String,
@@ -255,13 +268,18 @@ fn audit_shells(shells: &Value, worktree: &Path) -> Result<()> {
                         .components()
                         .any(|c| matches!(c, std::path::Component::ParentDir))
             })
-            || !matches!(
-                shell["status"].as_str(),
-                Some("exited" | "timeout" | "killed")
-            )
-            || shell["time"]["completed"].as_f64().is_none()
         {
-            bail!("V2 active or unknown shell work");
+            bail!("V2 shell ownership unknown");
+        }
+        if matches!(shell["status"].as_str(), Some("running" | "pending")) {
+            return Err(pending("V2 active shell work"));
+        }
+        if !matches!(
+            shell["status"].as_str(),
+            Some("exited" | "timeout" | "killed")
+        ) || shell["time"]["completed"].as_f64().is_none()
+        {
+            bail!("V2 shell activity unknown");
         }
     }
     Ok(())
@@ -401,12 +419,11 @@ impl Engine {
             || exported["info"]["cost"] != info["cost"]
             || exported["info"]["model"] != info["model"]
         {
-            bail!("V2 export accounting changed");
+            return Err(pending("V2 export accounting changed"));
         }
         let messages = exported["messages"]
             .as_array()
             .context("V2 transcript unknown")?;
-        audit_messages(messages, quiet)?;
         if quiet {
             let active = runtime
                 .call("/api/session/active", worktree, false, &[])
@@ -415,7 +432,7 @@ impl Engine {
                 .as_object()
                 .context("V2 active execution observation unknown")?;
             if active.contains_key(session) {
-                bail!("V2 session still active");
+                return Err(pending("V2 session still active"));
             }
             let inbox = runtime
                 .call(
@@ -430,7 +447,7 @@ impl Engine {
                 .context("V2 inbox unknown")?
                 .is_empty()
             {
-                bail!("V2 pending inbox work");
+                return Err(pending("V2 pending inbox work"));
             }
             let shells = runtime
                 .call(
@@ -450,13 +467,16 @@ impl Engine {
             .call(&format!("/api/session/{session}"), worktree, false, &[])
             .await?["data"]
             .clone();
-        if identity(&final_info, session, worktree)? != observed
-            || final_info["time"]["updated"] != info["time"]["updated"]
+        if identity(&final_info, session, worktree)? != observed {
+            bail!("V2 ownership binding changed during observation");
+        }
+        if final_info["time"]["updated"] != info["time"]["updated"]
             || final_info["cost"] != info["cost"]
             || final_info["tokens"] != info["tokens"]
         {
-            bail!("V2 session changed during observation");
+            return Err(pending("V2 session changed during observation"));
         }
+        audit_messages(messages, quiet)?;
         let accounting = accounting(&self.config, &info, messages);
         let evidence = json!({"source":"opencode_v2_native_observation","runtime":"2.0.29","observed_at":now(),
             "identity":observed,"native_updated":info["time"]["updated"],
@@ -682,6 +702,28 @@ impl Engine {
         .await
         .context("Completion seal timed out; preserve and reconcile its durable fence")?
     }
+    fn renew_completion_lease(&self, job: &mut Job) -> Result<()> {
+        self.store.transaction(|tx| {
+            let mut current = Store::load(tx, &job.input.job_id)?;
+            if current.revision != job.revision
+                || !current.active()
+                || current.state != "running"
+                || current.attempt.as_ref().map(|a| &a.attempt_id)
+                    != job.attempt.as_ref().map(|a| &a.attempt_id)
+            {
+                bail!("Completion seal lost its live lease/state");
+            }
+            let a = current.attempt.as_mut().context("V2 attempt")?;
+            let existing = chrono::DateTime::parse_from_rfc3339(&a.lease_expires_at)?;
+            a.lease_expires_at = (chrono::Utc::now()
+                + chrono::Duration::seconds(self.config.lease_seconds))
+            .max(existing.with_timezone(&chrono::Utc))
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+            Store::save(tx, &mut current, "completion observation lease renewed")?;
+            *job = current;
+            Ok(())
+        })
+    }
     async fn seal_v2_inner(&self, id: &str, expected_native_updated: &Value) -> Result<Value> {
         let _gate = self.gate.lock().await;
         let mut job = self.get(id)?;
@@ -702,6 +744,7 @@ impl Engine {
             bail!("Completion seal requires a live, unsubmitted V2 attempt");
         }
         let prior = self.v2_seal(&job)?;
+        self.renew_completion_lease(&mut job)?;
         let mut seal = if let Some(prior) = prior {
             if prior["attempt_id"] != attempt
                 || prior["session_id"] != session
@@ -714,10 +757,27 @@ impl Engine {
         } else {
             // Refuse to freeze a cached terminal outcome while a continuation,
             // inbox, shell, or unsettled usage is still observable.
-            let observation = self
-                .observe_v2(&job, &session, Some(&binding), true)
-                .await?;
+            let observation = match self.observe_v2(&job, &session, Some(&binding), true).await {
+                Ok(observation) => observation,
+                Err(error) if error.downcast_ref::<CompletionPending>().is_some() => {
+                    self.renew_completion_lease(&mut job)?;
+                    return Ok(
+                        json!({"status":"observing","job_id":id,"attempt_id":attempt,"session_id":session}),
+                    );
+                }
+                Err(error) => return Err(error),
+            };
+            // Same owned session, newer completion: continue observation without fencing.
+            if observation.evidence["native_updated"].as_f64() > expected_native_updated.as_f64()
+                || observation.evidence["native_outcome"] == Value::Null
+            {
+                self.renew_completion_lease(&mut job)?;
+                return Ok(
+                    json!({"status":"observing","job_id":id,"attempt_id":attempt,"session_id":session}),
+                );
+            }
             require_settled(&observation.accounting)?;
+            self.renew_completion_lease(&mut job)?;
             Self::require_same_completion(
                 &json!({"expected_native_updated":expected_native_updated}),
                 &observation,
@@ -758,6 +818,7 @@ impl Engine {
             .await?;
         require_settled(&observation.accounting)?;
         Self::require_same_completion(&seal, &observation)?;
+        self.renew_completion_lease(&mut job)?;
         if seal["status"] == "sealed" {
             let current = self.get(id)?;
             if current.revision != job.revision || !current.active() || current.state != "running" {

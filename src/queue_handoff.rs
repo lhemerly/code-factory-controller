@@ -27,6 +27,14 @@ fn idle(s: &Value) -> bool {
     s["current"].is_null() && matches!(s["status"].as_str(), Some("paused" | "complete"))
 }
 pub fn retire_idle(record: &Value, state_path: &Path) -> Result<()> {
+    retire_checked(record, state_path, || Ok(()))
+}
+fn retire_checked(
+    record: &Value,
+    state_path: &Path,
+    validate: impl Fn() -> Result<()>,
+) -> Result<()> {
+    validate()?;
     if !d::same_process(record) {
         return Ok(());
     }
@@ -82,6 +90,7 @@ pub fn retire_idle(record: &Value, state_path: &Path) -> Result<()> {
             );
             std::thread::yield_now();
         }
+        validate()?;
         ensure!(
             idle(&read(state_path)?),
             "Owner advanced before handoff; preserve it"
@@ -252,7 +261,7 @@ impl Transaction {
             .remove(name);
         self.persist()
     }
-    fn request(&mut self, goal: &Value, active: bool) -> Result<()> {
+    fn request(&mut self, goal: &Value, active: bool, state: &Value) -> Result<()> {
         let name = string(goal, "id")?;
         let pause = root(goal)?.join("PAUSE");
         if self.record["pauses"].get(name).is_none() {
@@ -264,8 +273,9 @@ impl Transaction {
             let nonce = uuid::Uuid::new_v4().simple().to_string();
             let (stage, released) = self.paths_for(goal, &nonce)?;
             let text = format!(
-                "Cooperative queue handoff {}; finish the owned cycle before maintenance.\n",
-                std::process::id()
+                "Cooperative queue handoff {}; transaction {}; finish the owned cycle before maintenance.\n",
+                std::process::id(),
+                string(&self.record, "transaction")?
             );
             use std::io::Write;
             let mut file = fs::OpenOptions::new()
@@ -277,7 +287,16 @@ impl Transaction {
             file.write_all(text.as_bytes())?;
             file.sync_all()?;
             fs::File::open(root(goal)?)?.sync_all()?;
-            self.record["pauses"][name] = json!({"root":resolve(&root(goal)?)?,"stage":stage,"released":released,"nonce":nonce,"text":text,"status":"planned"});
+            let status = read(&root(goal)?.join("status.json"))?;
+            let boundary = if state["current"]["goal"] == name
+                && state["current"]["expected_sequence"].is_u64()
+            {
+                state["current"]["expected_sequence"].clone()
+            } else {
+                status["sequence"].clone()
+            };
+            ensure!(boundary.is_u64(), "Handoff admission boundary unknown");
+            self.record["pauses"][name] = json!({"root":resolve(&root(goal)?)?,"stage":stage,"released":released,"nonce":nonce,"text":text,"status":"planned","expected_sequence":boundary});
             self.record["owned_pauses"][name] = json!(text);
             self.persist()?; // Stage identity is durable before the atomic link.
         }
@@ -514,6 +533,68 @@ impl Changes {
         }
     }
 }
+/// Maintenance can release only its causal pause within the same admission.
+pub fn handoff_resume_allowed(
+    gs: &Value,
+    status: &Value,
+    entry: &Value,
+    transaction: &Value,
+) -> Result<bool> {
+    let exhausted = !gs["admission_exhausted"].is_null()
+        || gs["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("Bounded implementation cycle ended"));
+    if exhausted || gs["state"] == "complete" {
+        return Ok(false);
+    }
+    if gs["state"] != "paused" {
+        return Ok(matches!(gs["state"].as_str(), Some("ready" | "waiting")));
+    }
+    Ok(entry["expected_sequence"].is_u64()
+        && entry["expected_sequence"] == status["sequence"]
+        && status["pause_observation"]["text_sha256"]
+            == json!(crate::model::digest(string(entry, "text")?))
+        && status["pause_observation"]["transaction"] == *transaction
+        && transaction
+            .as_str()
+            .is_some_and(|t| uuid::Uuid::parse_str(t).is_ok())
+        && status["pause_observation"]["sequence"] == status["sequence"]
+        && status["pause_reason"] == "Operator PAUSE file")
+}
+/// Refuse a foreign/legacy coordinator before any pause publication or signal.
+pub fn validate_owner(
+    owner: &Value,
+    manifest_path: &Path,
+    queue: &Path,
+    manifest: &Value,
+) -> Result<()> {
+    let b = &owner["binding"];
+    ensure!(
+        b["version"] == 1,
+        "Coordinator lacks canonical launch bindings; preserve it for explicit reconciliation"
+    );
+    let source = path(b, "source")?;
+    let expected = d::owner_binding(manifest_path, queue, manifest, &source)?;
+    ensure!(
+        *b == expected && owner["dispatcher_sha256"] == b["source_sha256"],
+        "Coordinator launch binding changed or belongs to another manifest/state/pool/source"
+    );
+    ensure!(
+        manifest["trusted_files"].get(source.to_str().context("source UTF-8")?)
+            == Some(&b["source_sha256"]),
+        "Coordinator source is not pinned by this manifest"
+    );
+    if d::same_process(&owner["process"]) {
+        let pid = owner["process"]["pid"].as_u64().context("owner PID")?;
+        ensure!(
+            resolve(&PathBuf::from(format!("/proc/{pid}/exe")))? == resolve(&source)?
+                && crate::recovery::sha(&PathBuf::from(format!("/proc/{pid}/exe")))?
+                    == b["source_sha256"].as_str().unwrap_or(""),
+            "Coordinator executable identity changed"
+        );
+    }
+    Ok(())
+}
 pub fn run_cli(a: Options) -> Result<()> {
     let pins = read(&a.runtime_pins)?;
     q::pins(&pins["files"])?;
@@ -553,6 +634,7 @@ pub fn run_cli(a: Options) -> Result<()> {
         let state = read(&state_path)?;
         let owner = read(&queue.root.join("owner.json"))?;
         let record = &owner["process"];
+        validate_owner(&owner, &a.manifest, &queue.root, &manifest)?;
         transaction.validate(&manifest)?;
         if !state["manifest_digest"].is_null() && state["manifest_digest"] != digest(&manifest) {
             changes.wait(&signals, record)?;
@@ -576,7 +658,7 @@ pub fn run_cli(a: Options) -> Result<()> {
                 Some("paused" | "complete")
             );
             if transaction.record["pauses"].get(name).is_some() || active {
-                transaction.request(g, active)?;
+                transaction.request(g, active, &state)?;
             }
         }
         if !d::same_process(record) {
@@ -589,7 +671,14 @@ pub fn run_cli(a: Options) -> Result<()> {
                 .values()
                 .all(|g| matches!(g["state"].as_str(), Some("paused" | "complete")))
         {
-            match retire_idle(record, &state_path) {
+            match retire_checked(record, &state_path, || {
+                ensure!(
+                    read(&a.manifest)? == manifest
+                        && read(&queue.root.join("owner.json"))? == owner,
+                    "Owner advanced before handoff; binding changed"
+                );
+                validate_owner(&owner, &a.manifest, &queue.root, &manifest)
+            }) {
                 Ok(()) => break,
                 Err(e) if e.to_string().contains("Owner advanced") => (),
                 Err(e) => return Err(e),
@@ -612,34 +701,18 @@ pub fn run_cli(a: Options) -> Result<()> {
         dispatcher.recover_and_audit()?;
         for g in &detached {
             let name = string(g, "id")?;
-            let mut resume_prepared = !root(g)?.join("PAUSE").exists();
-            let _gs_state = dispatcher.s["goals"][name]["state"].as_str().unwrap_or("");
-            let gs_reason = dispatcher.s["goals"][name]["reason"].as_str().unwrap_or("");
-            // Never resume exhausted one-cycle goals or goals paused due to scope exhaustion
-            if resume_prepared && g["admission_mode"] == "one_cycle" {
-                resume_prepared = false;
-            }
-            // Also check for bounded exhaustion reason
-            if resume_prepared && gs_reason.contains("Bounded implementation cycle ended") {
-                resume_prepared = false;
-            }
+            let gs = &dispatcher.s["goals"][name];
+            let status = read(&root(g)?.join("status.json"))?;
+            let entry = &transaction.record["pauses"][name];
+            let resume_prepared = !root(g)?.join("PAUSE").exists()
+                && handoff_resume_allowed(gs, &status, entry, &transaction.record["transaction"])?;
             if resume_prepared {
                 d::resume_after_handoff(&manifest, g)?;
-                let new_state = dispatcher.s["goals"][name]["state"].as_str().unwrap_or("");
-                if new_state == "paused" {
-                    // Keep as paused if it shouldn't be resumed
-                    // (don't change to ready)
-                } else if g["admission_mode"] != "one_cycle" {
-                    dispatcher.s["goals"][name]["state"] = json!("ready");
-                }
-            } else {
-                // Ensure state remains paused for exhausted one-cycle goals
+                dispatcher.s["goals"][name]["state"] = json!("ready");
+            } else if root(g)?.join("PAUSE").exists() {
                 dispatcher.s["goals"][name]["state"] = json!("paused");
-                if root(g)?.join("PAUSE").exists() {
-                    dispatcher.s["goals"][name]["reason"] =
-                        json!("Different explicit pause remains authoritative");
-                }
-                // Preserve existing reason if it's about bounded exhaustion
+                dispatcher.s["goals"][name]["reason"] =
+                    json!("Different explicit pause remains authoritative");
             }
             // Commit scheduling state before the transaction can declare release
             // complete; a crash earlier safely replays only the same detach.

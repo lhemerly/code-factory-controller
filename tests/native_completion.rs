@@ -13,8 +13,13 @@ struct Native {
     info_reads: usize,
     change_after_info: usize,
     change_kind: &'static str,
+    delay_ms: u64,
 }
 async fn mock(State(r): State<Arc<Mutex<Native>>>, uri: Uri) -> Json<Value> {
+    let delay = r.lock().unwrap().delay_ms;
+    if uri.path() == "/api/info" && delay > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+    }
     let mut r = r.lock().unwrap();
     Json(match uri.path() {
         "/api/info" => json!({"version":"2.0.29"}),
@@ -56,9 +61,11 @@ async fn fixture() -> (Fixture, Arc<Mutex<Native>>, tokio::task::JoinHandle<()>)
         info_reads: 0,
         change_after_info: usize::MAX,
         change_kind: "none",
+        delay_ms: 0,
     }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     f.config.opencode_url = Some(format!("http://{}", listener.local_addr().unwrap()));
+    f.config.lease_seconds = 60;
     f.config.data_dir = f.temp.path().join("native-completion-controller");
     f.engine = Engine::open(f.config.clone()).unwrap();
     f.engine.admit(f.input("job")).await.unwrap();
@@ -120,7 +127,10 @@ async fn quiet_seal_persists_and_disables_future_inference_without_changing_acco
 async fn stale_success_while_active_cannot_seal_or_disable_a_healthy_worker() {
     let (f, r, server) = fixture().await;
     r.lock().unwrap().active_at = 0;
-    assert!(f.engine.seal_v2("job", &json!(1)).await.is_err());
+    assert_eq!(
+        f.engine.seal_v2("job", &json!(1)).await.unwrap()["status"],
+        "observing"
+    );
     let status = f.engine.status(&f.engine.get("job").unwrap());
     assert_eq!(status["execution_seal"], Value::Null);
     assert_eq!(
@@ -278,6 +288,59 @@ async fn stale_owner_completion_revision_is_rejected_before_fencing() {
     assert_eq!(
         f.engine.status(&f.engine.get("job").unwrap())["execution_seal"],
         Value::Null
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn completion_sealing_renews_a_live_short_lease_before_slow_observations() {
+    let (f, r, server) = fixture().await;
+    f.engine
+        .store
+        .transaction(|tx| {
+            let mut job = code_factory_controller::store::Store::load(tx, "job")?;
+            job.attempt.as_mut().unwrap().lease_expires_at =
+                (chrono::Utc::now() + chrono::Duration::milliseconds(150)).to_rfc3339();
+            code_factory_controller::store::Store::save(tx, &mut job, "short live fixture lease")
+        })
+        .unwrap();
+    r.lock().unwrap().delay_ms = 250;
+    assert_eq!(
+        f.engine.seal_v2("job", &json!(1)).await.unwrap()["status"],
+        "sealed"
+    );
+    let job = f.engine.get("job").unwrap();
+    let expiry =
+        chrono::DateTime::parse_from_rfc3339(&job.attempt.as_ref().unwrap().lease_expires_at)
+            .unwrap();
+    assert!((expiry - chrono::Utc::now()).num_seconds() >= 59);
+    server.abort();
+}
+#[tokio::test]
+async fn prefence_owned_continuation_can_settle_and_seal_without_aborting_or_reusing_old_revision()
+{
+    let (f, r, server) = fixture().await;
+    r.lock().unwrap().active_at = 0;
+    assert_eq!(
+        f.engine.seal_v2("job", &json!(1)).await.unwrap()["status"],
+        "observing"
+    );
+    {
+        let mut r = r.lock().unwrap();
+        r.active_at = usize::MAX;
+        r.info["time"]["updated"] = json!(2);
+    }
+    assert_eq!(
+        f.engine.seal_v2("job", &json!(1)).await.unwrap()["status"],
+        "observing"
+    );
+    assert_eq!(
+        f.engine.status(&f.engine.get("job").unwrap())["execution_seal"],
+        Value::Null
+    );
+    assert_eq!(
+        f.engine.seal_v2("job", &json!(2)).await.unwrap()["status"],
+        "sealed"
     );
     server.abort();
 }

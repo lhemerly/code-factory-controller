@@ -629,14 +629,30 @@ impl<R: ReviewRemote> Adapter<R> {
         let snapshot = self.remote.snapshot(&b)?;
         let intent = &s["publication"];
         let remote = &snapshot["pr"]["head"]["sha"];
-        if intent["batch"] == key && intent["commit"] == commit && remote == commit {
+        let pending = matches!(intent["state"].as_str(), Some("push_intent" | "uncertain"));
+        if pending {
+            ensure!(
+                intent["batch"] == key
+                    && intent["commit"] == commit
+                    && intent["body_sha256"] == digest(&json!(body))
+                    && intent["previous_head"] == batch["head"],
+                "Pending publication identity changed; preserve intent without remote effects"
+            );
+            // A crash after durable intent cannot establish whether push ran.
+            // Exact observed outcome is the only automatic continuation.
+            ensure!(
+                remote == commit,
+                "Unfinished publication has not reconciled; no automatic repeated push"
+            );
+            identity(&snapshot, &b, commit)?;
+        } else if intent["batch"] == key && intent["commit"] == commit && remote == commit {
+            ensure!(
+                intent["body_sha256"] == digest(&json!(body)),
+                "Confirmed publication body changed; no automatic overwrite"
+            );
             identity(&snapshot, &b, commit)?;
         } else {
             identity(&snapshot, &b, string(&batch, "head")?)?;
-            ensure!(
-                intent["state"] != "uncertain",
-                "Uncertain publication has not reconciled; no automatic repeated push"
-            );
             s["publication"] = json!({"batch":key,"commit":commit,"previous_head":batch["head"],"body_sha256":digest(&json!(body)),"state":"push_intent"});
             self.persist(&s)?;
             if let Err(e) = self.remote.push(&b, repo, commit) {

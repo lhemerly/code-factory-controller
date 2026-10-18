@@ -560,6 +560,9 @@ impl Dispatcher {
             gs["harness"] = g["cycle_command"].clone();
         }
         self.sync_circuits(status.get("circuits").cloned().unwrap_or(json!({})))?;
+        if g["admission_mode"] == "one_cycle" && out["status"] != "all_free_unavailable" {
+            self.s["goals"][name]["admission_exhausted"] = json!({"sequence":status["sequence"],"result":rp,"result_sha256":crate::recovery::sha(&rp)?});
+        }
         if let Some(milestone) = milestone {
             if !list(&self.s["goals"][name], "milestones")?
                 .iter()
@@ -1187,9 +1190,12 @@ pub fn run_cli(options: Options) -> Result<Value> {
         .map(|q| Lock::acquire(&q.root.join("owner.lock"), false))
         .transpose()?;
     if let Some(q) = &queue {
-        save(
-            &q.root.join("owner.json"),
-            &json!({"state":"waiting_for_boundary","process":identity(std::process::id()),"dispatcher_sha256":crate::recovery::sha(&std::env::current_exe()?)?}),
+        write_owner(
+            q,
+            &options.manifest,
+            &m,
+            &std::env::current_exe()?,
+            "waiting_for_boundary",
         )?
     }
     let pool_path = path(&m, "pool_lock")?;
@@ -1266,6 +1272,14 @@ pub fn run_cli(options: Options) -> Result<Value> {
             crate::queue_handoff::retire_idle(old, &root(first)?.join("status.json"))?;
         }
         for goal in list(&d.m, "goals")?.clone() {
+            let gs = &d.s["goals"][string(&goal, "id")?];
+            if !gs["admission_exhausted"].is_null()
+                || gs["reason"]
+                    .as_str()
+                    .is_some_and(|r| r.contains("Bounded implementation cycle ended"))
+            {
+                continue;
+            }
             resume_goal(&d.m, &goal)?;
             let name = string(&goal, "id")?;
             if d.s["goals"][name]["state"] == "paused"
@@ -1278,10 +1292,7 @@ pub fn run_cli(options: Options) -> Result<Value> {
     }
     let receiver = queue.as_ref().map(q::Queue::receiver).transpose()?;
     if let Some(q) = &queue {
-        save(
-            &q.root.join("owner.json"),
-            &json!({"state":"active","process":identity(std::process::id()),"dispatcher_sha256":crate::recovery::sha(&d.executable)?}),
-        )?
+        write_owner(q, &options.manifest, &d.m, &d.executable, "active")?
     }
     let result = (|| -> Result<Value> {
         loop {
@@ -1301,6 +1312,7 @@ pub fn run_cli(options: Options) -> Result<Value> {
                 }
                 q::enroll(q, &mut d.m, &mut d.s, &options.manifest, &state_path)?;
                 q::retry_goals(q, &d.m, &mut d.s, &state_path)?;
+                write_owner(q, &options.manifest, &d.m, &d.executable, "active")?;
             }
             pins(&d.m["trusted_files"])?;
             if d.step()? {
@@ -1351,6 +1363,36 @@ pub fn run_cli(options: Options) -> Result<Value> {
     if stopped() { Ok(d.s.clone()) } else { result }
 }
 
+/// Canonical identity for the coordinator's exact launch, separate from PID identity.
+pub fn owner_binding(
+    manifest_path: &Path,
+    queue: &Path,
+    manifest: &Value,
+    executable: &Path,
+) -> Result<Value> {
+    Ok(
+        json!({"version":1,"manifest":resolve(manifest_path)?,"manifest_digest":digest(manifest),
+        "state":resolve(&path(manifest,"state")?)?,"pool_lock":resolve(&path(manifest,"pool_lock")?)?,
+        "queue":resolve(queue)?,"source":resolve(executable)?,"source_sha256":crate::recovery::sha(executable)?,
+        "trusted_files_digest":digest(&manifest["trusted_files"])}),
+    )
+}
+fn write_owner(
+    queue: &q::Queue,
+    manifest_path: &Path,
+    manifest: &Value,
+    executable: &Path,
+    state: &str,
+) -> Result<()> {
+    let record = json!({"state":state,"process":identity(std::process::id()),
+        "dispatcher_sha256":crate::recovery::sha(executable)?,
+        "binding":owner_binding(manifest_path,&queue.root,manifest,executable)?});
+    let p = queue.root.join("owner.json");
+    if read(&p).ok().as_ref() != Some(&record) {
+        save(&p, &record)?;
+    }
+    Ok(())
+}
 /// Explicit owner-only resume path; called by the CLI or exact owned handoff pauses.
 pub fn resume_goal(manifest: &Value, g: &Value) -> Result<()> {
     resume_goal_mode(manifest, g, true)
@@ -1374,13 +1416,6 @@ fn resume_goal_mode(manifest: &Value, g: &Value, clear_pause: bool) -> Result<()
         "Cannot resume unresolved {}",
         g["id"]
     );
-    // Never resume an exhausted one-cycle goal via maintenance handoff
-    if g["admission_mode"] == "one_cycle" && status["status"] == "paused" {
-        ensure!(
-            false,
-            "Bounded implementation cycle ended; independent review or explicit repair admission required"
-        );
-    }
     if let Some(rp) = status["last_cycle"]["result"].as_str() {
         let directory = Path::new(rp).parent().context("result parent required")?;
         let result = read(Path::new(rp))?;
