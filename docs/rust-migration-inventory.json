@@ -4,33 +4,39 @@
   "python_files": [
     {
       "path": "dashboard/__init__.py",
-      "role": "production_package_metadata",
-      "migration_status": "pending"
+      "role": "legacy_reference",
+      "migration_status": "native_entrypoint_available_legacy_retained_for_test_and_explicit_rollback",
+      "rust": "src/dashboard/"
     },
     {
       "path": "dashboard/__main__.py",
-      "role": "production",
-      "migration_status": "pending"
+      "role": "legacy_reference",
+      "migration_status": "native_entrypoint_available_legacy_retained_for_test_and_explicit_rollback",
+      "rust": "src/dashboard/"
     },
     {
       "path": "dashboard/domain.py",
-      "role": "production",
-      "migration_status": "pending"
+      "role": "legacy_reference",
+      "migration_status": "native_entrypoint_available_legacy_retained_for_test_and_explicit_rollback",
+      "rust": "src/dashboard/"
     },
     {
       "path": "dashboard/loader.py",
-      "role": "production",
-      "migration_status": "pending"
+      "role": "legacy_reference",
+      "migration_status": "native_entrypoint_available_legacy_retained_for_test_and_explicit_rollback",
+      "rust": "src/dashboard/"
     },
     {
       "path": "dashboard/render.py",
-      "role": "production",
-      "migration_status": "pending"
+      "role": "legacy_reference",
+      "migration_status": "native_entrypoint_available_legacy_retained_for_test_and_explicit_rollback",
+      "rust": "src/dashboard/"
     },
     {
       "path": "dashboard/server.py",
-      "role": "production",
-      "migration_status": "pending"
+      "role": "legacy_reference",
+      "migration_status": "native_entrypoint_available_legacy_retained_for_test_and_explicit_rollback",
+      "rust": "src/dashboard/"
     },
     {
       "path": "dashboard/tests/__init__.py",
@@ -74,19 +80,21 @@
     },
     {
       "path": "scripts/check-bonsai.py",
-      "role": "production",
-      "migration_status": "native_replacement_tested_legacy_entrypoint_retained",
+      "role": "legacy_reference",
+      "migration_status": "native_entrypoint_available_legacy_retained_for_test_and_explicit_rollback",
       "rust": "src/check_bonsai.rs"
     },
     {
       "path": "scripts/code-factory.py",
-      "role": "production",
-      "migration_status": "pending"
+      "role": "legacy_reference",
+      "migration_status": "native_entrypoint_available_legacy_retained_for_test_and_explicit_rollback",
+      "rust": "src/cli_update.rs"
     },
     {
       "path": "scripts/dispatch-queue.py",
-      "role": "production",
-      "migration_status": "pending"
+      "role": "legacy_reference",
+      "migration_status": "native_entrypoint_available_legacy_retained_for_test_and_explicit_rollback",
+      "rust": "src/dispatch_queue.rs"
     },
     {
       "path": "scripts/fake-research-cycle.py",
@@ -95,44 +103,45 @@
     },
     {
       "path": "scripts/github-review.py",
-      "role": "production",
-      "migration_status": "pending"
+      "role": "legacy_reference",
+      "migration_status": "native_entrypoint_available_legacy_retained_for_test_and_explicit_rollback",
+      "rust": "src/github_review.rs"
     },
     {
       "path": "scripts/goal-acceptance.py",
-      "role": "production",
-      "migration_status": "native_replacement_tested_legacy_entrypoint_retained",
+      "role": "legacy_reference",
+      "migration_status": "native_entrypoint_available_legacy_retained_for_test_and_explicit_rollback",
       "rust": "src/goal_acceptance.rs"
     },
     {
       "path": "scripts/goal-runner.py",
-      "role": "production",
-      "migration_status": "native_replacement_tested_legacy_entrypoint_retained",
+      "role": "legacy_reference",
+      "migration_status": "native_entrypoint_available_legacy_retained_for_test_and_explicit_rollback",
       "rust": "src/goal_runner.rs"
     },
     {
       "path": "scripts/main-publication.py",
-      "role": "production",
-      "migration_status": "native_replacement_tested_legacy_entrypoint_retained",
+      "role": "legacy_reference",
+      "migration_status": "native_entrypoint_available_legacy_retained_for_test_and_explicit_rollback",
       "rust": "src/main_publication.rs",
       "shared_native_audit": "src/delivery_audit.rs"
     },
     {
       "path": "scripts/owner-interruption.py",
-      "role": "production",
-      "migration_status": "native_replacement_tested_legacy_entrypoint_retained",
+      "role": "legacy_reference",
+      "migration_status": "native_entrypoint_available_legacy_retained_for_test_and_explicit_rollback",
       "rust": "src/recovery.rs"
     },
     {
       "path": "scripts/permission-block-resolution.py",
-      "role": "production",
-      "migration_status": "native_replacement_tested_legacy_entrypoint_retained",
+      "role": "legacy_reference",
+      "migration_status": "native_entrypoint_available_legacy_retained_for_test_and_explicit_rollback",
       "rust": "src/recovery.rs"
     },
     {
       "path": "scripts/pre-admission-recovery.py",
-      "role": "production",
-      "migration_status": "native_replacement_tested_legacy_entrypoint_retained",
+      "role": "legacy_reference",
+      "migration_status": "native_entrypoint_available_legacy_retained_for_test_and_explicit_rollback",
       "rust": "src/recovery.rs"
     },
     {
@@ -142,18 +151,20 @@
     },
     {
       "path": "scripts/queue-handoff.py",
-      "role": "production",
-      "migration_status": "pending"
+      "role": "legacy_reference",
+      "migration_status": "native_entrypoint_available_legacy_retained_for_test_and_explicit_rollback",
+      "rust": "src/queue_handoff.rs"
     },
     {
       "path": "scripts/research-dispatch.py",
-      "role": "production",
-      "migration_status": "pending"
+      "role": "legacy_reference",
+      "migration_status": "native_entrypoint_available_legacy_retained_for_test_and_explicit_rollback",
+      "rust": "src/research_dispatch.rs"
     },
     {
       "path": "scripts/spark-control.py",
-      "role": "production",
-      "migration_status": "native_replacement_tested_legacy_entrypoint_retained",
+      "role": "legacy_reference",
+      "migration_status": "native_entrypoint_available_legacy_retained_for_test_and_explicit_rollback",
       "rust": "src/recovery.rs"
     },
     {
@@ -283,8 +294,8 @@
     },
     {
       "path": "scripts/trace-ledger.py",
-      "role": "production",
-      "migration_status": "native_replacement_tested_legacy_entrypoint_retained",
+      "role": "legacy_reference",
+      "migration_status": "native_entrypoint_available_legacy_retained_for_test_and_explicit_rollback",
       "rust": "src/trace_ledger.rs"
     },
     {
@@ -341,9 +352,78 @@
       "path": "scripts/test-rust-trace-contention.py",
       "role": "test",
       "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/freeze-dashboard-policy.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/native-fixture-runtime.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-rust-baseline-cli.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-rust-context-cutover.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-rust-dashboard.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-rust-dispatch-cli.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-rust-github-controller.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-rust-handoff-cli.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-rust-queue-cli.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-rust-feedback-cli.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-rust-retry-cli.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-rust-dispatch-regressions.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
+    },
+    {
+      "path": "scripts/test-rust-no-python-path.py",
+      "role": "test",
+      "migration_status": "retained_test_evidence"
     }
   ],
-  "remaining_js_python_callsite": "scripts/research-context.mjs",
-  "js_ts_integration": "retained; no production callsites changed",
-  "checkpoint_base_commit": "f5ccf72e21e806d6d9429dd1f4c4e41ef5ebe4c7"
+  "remaining_js_python_callsite": null,
+  "js_ts_integration": "Retained. research-context.mjs invokes native recovery subcommands through its approved controller pin.",
+  "checkpoint_base_commit": "f5ccf72e21e806d6d9429dd1f4c4e41ef5ebe4c7",
+  "verified_cloud_base_commit": "a42114c65d3d06a329f40d53707cf156d70e6bda",
+  "native_production_entrypoints_python_independent": true,
+  "qualification_status": "Native distribution implemented; production activation and live provider/queued-goal qualification remain pending.",
+  "activation": "Not performed; existing approved installations and manifests have not been changed."
 }

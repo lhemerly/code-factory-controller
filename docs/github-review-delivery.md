@@ -1,3 +1,9 @@
+> Native runtime: use `code-factory research-dispatch`, `code-factory queue-handoff`,
+> `code-factory github-review`, and `code-factory dashboard` for the corresponding
+> entrypoint. Python commands below are historical parity/rollback references.
+> Production activation and live provider qualification remain pending; see
+> [cloud reconciliation](../docs/cloud-rust-production.md).
+
 # GitHub review and delivery boundary
 
 The finite `scripts/github-review.py` operator adapter connects the existing

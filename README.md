@@ -25,13 +25,15 @@ This is a local service for trusted workloads. Git worktrees and environment fil
 
 ## Install and automatically update the CLI
 
-On Linux with Python 3, Git and Rust available, clone this repository and run:
+On Linux with Git and Rust available, clone this repository and run:
 
 ```sh
-python3 scripts/code-factory.py install --auto-update
+scripts/code-factory install --auto-update
 ```
 
-This installs `~/.local/bin/code-factory` and `code-factory-controller`. Ensure `~/.local/bin` is on PATH. `code-factory run` launches the durable backlog runner; `serve`, `operator`, `tui` and `schemas` forward to the Rust controller.
+The native installer requires a stable release that includes these entrypoints; this cloud branch has not published one. For source-only use, run `scripts/code-factory <command>` directly.
+
+The installer creates `~/.local/bin/code-factory` and `code-factory-controller`. Ensure `~/.local/bin` is on PATH. `code-factory run` launches the durable backlog runner; `serve`, `operator`, `tui`, `schemas`, `research-dispatch` and `dashboard` use the same native binary. The installed distribution includes the necessary OpenCode JS/TS runtime and no Python orchestration scripts.
 
 The user systemd timer checks the latest stable GitHub release daily. Updates build the tagged source with locked dependencies, run runner regression checks, and switch the active version only after success. Failed updates retain the installed version. Existing running controllers continue using their current executable; an update never restarts an active job or changes its configuration/database. Rust build dependencies and network access are required for updates.
 
@@ -188,14 +190,16 @@ The host-owned verifier is responsible for measuring the required behavior. Prot
 A staged [Rust migration](docs/rust-migration.md) adds `code-factory-controller run`
 with the same backlog options and Python-compatible state/receipts. The Rust path
 uses supervised whole-goal acceptance and audits saved completion on restart.
-Queue dispatch, recovery, publication, installation and the dashboard still use
-Python; the system-wide migration and live essentials checkpoint remain open.
+Native queue dispatch, recovery, review delivery, publication, installation and
+the dashboard are implemented. Caller cutover and local parity are checked; live
+provider qualification, deployment and the real queued-goal completion checkpoint
+remain open. See the [reconciliation handoff](docs/cloud-rust-production.md).
 
 
-The Linux host runner in `scripts/goal-runner.py` executes an approved sequence of jobs in adapter mode. Each job starts from the previous independently verified integration commit. The runner persists admission intent before contacting the controller, reconciles existing job identities on restart, retains exact integrated receipts and deliveries, and bounds verification rework. It respects controller provider cooldowns and stops on paused, blocked or ambiguous effects.
+The native Linux host runner (`code-factory run`) executes an approved sequence of jobs in adapter mode. Each job starts from the previous independently verified integration commit. The runner persists admission intent before contacting the controller, reconciles existing job identities on restart, retains exact integrated receipts and deliveries, and bounds verification rework. It respects controller provider cooldowns and stops on paused, blocked or ambiguous effects.
 
 ```sh
-python3 scripts/goal-runner.py --manifest /absolute/path/goal.json \
+code-factory run --manifest /absolute/path/goal.json \
   --state /absolute/path/goal-state.json --max-seconds 86400
 ```
 
@@ -248,7 +252,7 @@ The test suite covers durable replay, restart recovery, independent verification
 
 Live Big Pickle runs completed a bounded hardening change in the plugin repository both without and with plugin assistance. Both passed trusted candidate and integrated checks, delivered a checked archive, and survived a controller-process restart. The source repository was used in a disposable clone; the delivered change is a local artifact, not a claim that its upstream branch was changed. See [validation evidence and limits](docs/validation.md).
 
-An opt-in [foreground shared research launcher](docs/research-dispatch.md) coordinates a fixed approved goal list with one shared worker slot and independent acceptance. Dynamic multi-project scheduling, PR/deployment delivery adapters, paid models, distributed workers and a web dashboard remain outside this release. [MIT license](LICENSE); [dependency and contract notices](THIRD_PARTY_NOTICES.md).
+An opt-in [foreground shared research launcher](docs/research-dispatch.md) coordinates a fixed approved goal list with one shared worker slot and independent acceptance. Approved queue intake, finite review/main publication and a read-only dashboard are available; actual provider and deployment qualification is recorded separately. Paid fallback remains disabled. [MIT license](LICENSE); [dependency and contract notices](THIRD_PARTY_NOTICES.md).
 
 ## Private review snapshot
 

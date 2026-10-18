@@ -1,3 +1,9 @@
+> Native runtime: use `code-factory research-dispatch`, `code-factory queue-handoff`,
+> `code-factory github-review`, and `code-factory dashboard` for the corresponding
+> entrypoint. Python commands below are historical parity/rollback references.
+> Production activation and live provider qualification remain pending; see
+> [cloud reconciliation](../docs/cloud-rust-production.md).
+
 # Code Factory — local read-only dashboard
 
 A lightweight, dependency-free (Python 3 stdlib only) web dashboard that shows the

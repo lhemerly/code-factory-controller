@@ -8,6 +8,7 @@ description = "Durable Rust controller for code factories"
 repository = "https://github.com/lhemerly/code-factory-controller"
 
 [dependencies]
+base64 = "=0.22.1"
 anyhow = "=1.0.102"
 axum = "=0.8.9"
 chrono = { version = "=0.4.45", features = ["serde"] }

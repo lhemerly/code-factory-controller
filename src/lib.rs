@@ -20,3 +20,15 @@ pub mod store;
 pub mod supervisor;
 pub mod trace_ledger;
 pub mod tui;
+
+pub mod dispatch_queue;
+
+pub mod research_dispatch;
+
+pub mod queue_handoff;
+
+pub mod cli_update;
+
+pub mod github_review;
+
+pub mod dashboard;

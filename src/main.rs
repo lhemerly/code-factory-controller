@@ -15,6 +15,18 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Read-only local state dashboard.
+    Dashboard(code_factory_controller::dashboard::Options),
+    /// Receipt-bound review intake and finite PR delivery.
+    GithubReview(code_factory_controller::github_review::Options),
+    /// Install a verified stable release for future CLI invocations.
+    Install(code_factory_controller::cli_update::Options),
+    /// Check and atomically activate a newer stable release.
+    Update(code_factory_controller::cli_update::Options),
+    /// Single-slot approved queue owner and boundary intake.
+    ResearchDispatch(code_factory_controller::research_dispatch::Options),
+    /// Cooperative pinned owner handoff at an idle admission boundary.
+    QueueHandoff(code_factory_controller::queue_handoff::Options),
     /// Whole-goal acceptance or read-only receipt audit (JSON request on stdin).
     GoalAcceptance,
     /// Execute an approved durable backlog with whole-goal acceptance.
@@ -205,6 +217,17 @@ fn main() -> Result<()> {
         println!("{}", serde_json::to_string(&result)?);
         return Ok(());
     }
+    let cli = match cli.command {
+        Command::ResearchDispatch(options) => {
+            let out = code_factory_controller::research_dispatch::run_cli(options)?;
+            println!("{}", serde_json::to_string_pretty(&out)?);
+            return Ok(());
+        }
+        Command::QueueHandoff(options) => {
+            return code_factory_controller::queue_handoff::run_cli(options);
+        }
+        command => Cli { command },
+    };
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
@@ -212,6 +235,17 @@ fn main() -> Result<()> {
 }
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Command::Dashboard(options) => code_factory_controller::dashboard::run_cli(options).await?,
+        Command::GithubReview(options) => {
+            let out = code_factory_controller::github_review::run_cli(options)?;
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        Command::Install(options) | Command::Update(options) => {
+            code_factory_controller::cli_update::run_cli(options).await?
+        }
+        Command::QueueHandoff(_) | Command::ResearchDispatch(_) => {
+            unreachable!("handled before runtime initialization")
+        }
         Command::Run(options) => {
             let code =
                 code_factory_controller::goal_runner::run(options, &std::env::current_exe()?)

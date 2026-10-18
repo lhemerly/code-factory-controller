@@ -24,7 +24,6 @@ jobs:
       - run: python3 scripts/test-cli-updater.py
       - name: Test dashboard synthetic state and read-only HTTP (no private capture)
         run: python3 -m unittest dashboard.tests.test_current_state dashboard.tests.test_fixtures dashboard.tests.test_loader_safety dashboard.tests.test_server dashboard.tests.test_state_root
-      - run: python3 scripts/test-research-dispatch.py
       - run: python3 scripts/test-worker-regression-fixture.py
       - run: python3 scripts/test-dispatch-queue.py
       - run: python3 scripts/test-queue-handoff.py
@@ -33,7 +32,6 @@ jobs:
       - run: node --experimental-strip-types scripts/test-pstack-github.mjs
       - run: node scripts/test-continuous-ownership.mjs
       - run: node scripts/test-free-model-policy.mjs
-      - run: node scripts/test-research-context.mjs
       - run: node scripts/test-native-plugin-readiness.mjs
       - run: node scripts/test-native-plugin-readiness-recovery.mjs
       - run: node scripts/test-native-plugin-readiness-failclosed.mjs
@@ -60,9 +58,23 @@ jobs:
           python3 scripts/test-rust-pre-admission.py
           python3 scripts/test-rust-trace-contention.py
           python3 scripts/test-rust-check-bonsai.py
-      - name: Exercise two-goal owner CLI (fake providers, real verification)
+      - name: Verify native queue, review, caller cutover and dashboard (no inference)
         run: |
-          python3 scripts/test-dispatch-cli.py
+          node scripts/test-rust-research-context.mjs
+          python3 scripts/test-rust-dispatch-regressions.py
+          python3 scripts/test-rust-dispatch-cli.py
+          python3 scripts/test-rust-baseline-cli.py
+          python3 scripts/test-rust-no-python-path.py
+          python3 scripts/test-rust-feedback-cli.py
+          FACTORY_FIXTURE_TEST_HOST_EXIT=1 python3 scripts/test-rust-feedback-cli.py
+          python3 scripts/test-rust-queue-cli.py
+          python3 scripts/test-rust-retry-cli.py
+          python3 scripts/test-rust-handoff-cli.py
+          python3 scripts/test-rust-github-controller.py
+          python3 scripts/test-rust-context-cutover.py
+          PYTHONPATH=. python3 scripts/test-rust-dashboard.py
+      - name: Exercise retained goal and controller compatibility (fake providers)
+        run: |
           python3 scripts/test-goal-feedback-cli.py
           FACTORY_FIXTURE_TEST_HOST_EXIT=1 python3 scripts/test-goal-feedback-cli.py
           python3 scripts/test-goal-process-lifecycle.py

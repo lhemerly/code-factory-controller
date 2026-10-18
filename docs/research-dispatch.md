@@ -1,3 +1,9 @@
+> Native runtime: use `code-factory research-dispatch`, `code-factory queue-handoff`,
+> `code-factory github-review`, and `code-factory dashboard` for the corresponding
+> entrypoint. Python commands below are historical parity/rollback references.
+> Production activation and live provider qualification remain pending; see
+> [cloud reconciliation](../docs/cloud-rust-production.md).
+
 # Foreground shared research launcher
 
 `scripts/research-dispatch.py` operates a fixed, owner-approved list of existing

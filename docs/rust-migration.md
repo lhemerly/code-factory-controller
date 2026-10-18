@@ -1,3 +1,8 @@
+> Historical checkpoint record. The current native integration and remaining live
+> gates are documented in [cloud-rust-production.md](cloud-rust-production.md).
+> Earlier statements below about pending production modules describe their
+> historical checkpoints, not the current source tree.
+
 # Rust runtime migration checkpoint
 
 This is a **partial, locally verified migration**, not the completed autonomous

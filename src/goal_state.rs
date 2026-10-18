@@ -528,6 +528,9 @@ pub struct Lock {
     _file: File,
 }
 impl Lock {
+    pub(crate) fn raw_fd(&self) -> i32 {
+        self._file.as_raw_fd()
+    }
     pub fn acquire(path: &Path, wait: bool) -> Result<Self> {
         let file = OpenOptions::new()
             .read(true)

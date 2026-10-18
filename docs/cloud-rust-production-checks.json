@@ -1,0 +1,180 @@
+{
+  "version": 1,
+  "base_commit": "a42114c65d3d06a329f40d53707cf156d70e6bda",
+  "evidence_scope": "local source and synthetic runtime integration; no live model/provider or production deployment",
+  "rust": {
+    "command": "cargo test --locked",
+    "passed": true,
+    "top_level_passed": 220,
+    "clippy_all_targets_warnings_as_errors": true,
+    "format_check": true,
+    "locked_debug_build": true,
+    "locked_release_build": true,
+    "package_no_verify": true,
+    "schema_bytes_unchanged": true
+  },
+  "native_parity_suites": [
+    {
+      "suite": "test-rust-goal-acceptance.py",
+      "exit_code": 0,
+      "elapsed_seconds": 2.574
+    },
+    {
+      "suite": "test-rust-goal-runner.py",
+      "exit_code": 0,
+      "elapsed_seconds": 6.813
+    },
+    {
+      "suite": "test-rust-permission-resolution.py",
+      "exit_code": 0,
+      "elapsed_seconds": 60.093
+    },
+    {
+      "suite": "test-rust-owner-interruption.py",
+      "exit_code": 0,
+      "elapsed_seconds": 16.349
+    },
+    {
+      "suite": "test-rust-spark-control.py",
+      "exit_code": 0,
+      "elapsed_seconds": 0.077
+    },
+    {
+      "suite": "test-rust-scope-recovery.py",
+      "exit_code": 0,
+      "elapsed_seconds": 1.324
+    },
+    {
+      "suite": "test-rust-trace-ledger.py",
+      "exit_code": 0,
+      "elapsed_seconds": 0.12
+    },
+    {
+      "suite": "test-rust-pre-admission.py",
+      "exit_code": 0,
+      "elapsed_seconds": 0.209
+    },
+    {
+      "suite": "test-rust-trace-contention.py",
+      "exit_code": 0,
+      "elapsed_seconds": 0.208
+    },
+    {
+      "suite": "test-rust-check-bonsai.py",
+      "exit_code": 0,
+      "elapsed_seconds": 2.142
+    }
+  ],
+  "release_integration_suites": [
+    {
+      "suite": "test-rust-dispatch-cli.py",
+      "exit_code": 0,
+      "elapsed_seconds": 0.902,
+      "artifact": "optimized native binary"
+    },
+    {
+      "suite": "test-rust-baseline-cli.py",
+      "exit_code": 0,
+      "elapsed_seconds": 0.838,
+      "artifact": "optimized native binary"
+    },
+    {
+      "suite": "test-rust-feedback-cli.py",
+      "exit_code": 0,
+      "elapsed_seconds": 1.069,
+      "artifact": "optimized native binary"
+    },
+    {
+      "suite": "test-rust-queue-cli.py",
+      "exit_code": 0,
+      "elapsed_seconds": 1.272,
+      "artifact": "optimized native binary"
+    },
+    {
+      "suite": "test-rust-retry-cli.py",
+      "exit_code": 0,
+      "elapsed_seconds": 0.354,
+      "artifact": "optimized native binary"
+    },
+    {
+      "suite": "test-rust-handoff-cli.py",
+      "exit_code": 0,
+      "elapsed_seconds": 0.444,
+      "artifact": "optimized native binary"
+    },
+    {
+      "suite": "test-rust-github-controller.py",
+      "exit_code": 0,
+      "elapsed_seconds": 0.908,
+      "artifact": "optimized native binary"
+    },
+    {
+      "suite": "test-rust-context-cutover.py",
+      "exit_code": 0,
+      "elapsed_seconds": 0.931,
+      "artifact": "optimized native binary"
+    },
+    {
+      "suite": "test-rust-dashboard.py",
+      "exit_code": 0,
+      "elapsed_seconds": 0.162,
+      "artifact": "optimized native binary"
+    },
+    {
+      "suite": "test-rust-no-python-path.py",
+      "exit_code": 0,
+      "elapsed_seconds": 0.232,
+      "artifact": "optimized native binary"
+    },
+    {
+      "suite": "test-rust-feedback-cli.py (host exit 7)",
+      "exit_code": 0,
+      "elapsed_seconds": 1.052,
+      "artifact": "optimized native binary"
+    }
+  ],
+  "other_checks": {
+    "legacy_dispatcher_assertions_with_native_caller_fixtures": 108,
+    "js_context_assertions_with_native_pre_admission_fixture": 41,
+    "dashboard_legacy_synthetic": 55,
+    "dashboard_native_differential_and_http": 5,
+    "dashboard_frozen_accounting_cases": 62,
+    "provider_routing_synthetic": 4,
+    "free_model_policy_synthetic": 11,
+    "pstack_and_ownership_and_readiness_contracts_passed": true
+  },
+  "review": "Same-agent source/boundary review plus independent controller/goal-check runtime receipts. Independent review of the reconciled final tree remains required.",
+  "verification_incidents": [
+    {
+      "status": "resolved_by_stable_artifact_rerun",
+      "failure": "Controller bytes changed",
+      "cause": "Concurrent Cargo schema generation replaced the debug executable while the full suite had pinned it. Pin checks rejected the replacement; final unchanged-artifact suite passed."
+    },
+    {
+      "status": "resolved_by_fixture_transport_adapters",
+      "failure": "Legacy context fixture transports did not implement native recovery subcommands.",
+      "resolution": "Retained original assertions; supplied real native auditors through explicit test-only adapters after the native build."
+    }
+  ],
+  "not_completed": [
+    "desktop overlay ZIP inspection (signed transfer download blocked by proxy 403)",
+    "real provider/lifecycle/free-or-included-fallback qualification",
+    "actual useful goal registration, queue admission and live completion",
+    "production activation, rollback/timer observation and private dashboard capture parity",
+    "independent reconciled-tree review, Factory exact-commit preflight and main CI"
+  ],
+  "effects": {
+    "remote_write_attempted": false,
+    "production_state_changed": false,
+    "research_resumed": false,
+    "new_credentials_or_host_access": false,
+    "paid_or_astra_provider_invoked": false
+  },
+  "accounting": {
+    "cloud_model_tokens": null,
+    "cloud_model_cache_tokens": null,
+    "cloud_model_spend": null,
+    "cloud_total_elapsed_seconds": null,
+    "reason": "Not exposed/measured by this executor; not inferred as zero. Individual local test elapsed times are measured."
+  }
+}

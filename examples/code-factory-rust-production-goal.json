@@ -1,0 +1,16 @@
+{
+  "id": "code-factory-rust-production",
+  "objective": "Complete and qualify the Rust production migration and a reliable autonomous coding loop for the private Code Factory controller, preserving compatibility, ownership, permissions, receipts, unknown accounting and rollback.",
+  "completion_criteria": [
+    "Production orchestration and installed entrypoints run without Python; required OpenCode JS/TS and approved test runtimes remain available.",
+    "An approved useful coding goal is registered and queued, retains one owner across failure/handoff, and repairs a supported failure through only free or included qualified execution.",
+    "Independent fresh exact-commit whole-goal checks establish the requested behavior; fake transports and passing implementation tests alone cannot satisfy this criterion.",
+    "Usage, cache fields, active/waiting/elapsed time and unavailable accounting are reported truthfully, with unknowns preserved.",
+    "The reconciled exact commit passes Factory preflight and main-branch CI, and deployment/rollback is observed without resuming paused research goals."
+  ],
+  "pause_conditions": [
+    "A permission, ownership, execution-stop, accounting or publication effect is unresolved.",
+    "The approved contained provider or included/free quota policy is unavailable or unqualified; no paid or Astra fallback is permitted.",
+    "Remote identity, exact commit, independent evidence or runtime pins cannot be confirmed."
+  ]
+}
