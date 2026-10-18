@@ -602,7 +602,7 @@ impl Engine {
         let Some(a) = job.attempt.as_ref().filter(|a| a.mode == MODE) else {
             return Ok(None);
         };
-        self.store.transaction(|tx| {
+        let value: Option<Value> = self.store.transaction(|tx| {
             let value: Option<String> = tx
                 .query_row(
                     "SELECT value FROM metadata WHERE key=?1",
@@ -613,11 +613,50 @@ impl Engine {
             value
                 .map(|v| serde_json::from_str(&v).map_err(Into::into))
                 .transpose()
-        })
+        })?;
+        if let Some(seal) = &value {
+            let stamp = seal["requested_at"]
+                .as_str()
+                .context("Completion seal timestamp")?;
+            if seal["version"] != 1
+                || seal["job_id"] != job.input.job_id
+                || seal["attempt_id"] != a.attempt_id
+                || seal["session_id"].as_str() != a.session_id.as_deref()
+                || !matches!(seal["status"].as_str(), Some("fencing" | "sealed"))
+                || stamp.len() > 64
+                || chrono::DateTime::parse_from_rfc3339(stamp).is_err()
+                || uuid::Uuid::parse_str(seal["seal_id"].as_str().unwrap_or("")).is_err()
+                || seal["binding"] != self.v2_binding(job)?
+            {
+                bail!("Completion seal identity/schema invalid; preserve admission fence");
+            }
+            if seal["status"] == "sealed" && seal["accounting"]["status"] != "settled_zero" {
+                bail!("Completion seal accounting unresolved");
+            }
+        }
+        Ok(value)
+    }
+    pub(crate) fn v2_seal_summary(seal: &Value) -> Value {
+        let accounting = if seal["status"] == "sealed" {
+            "settled_zero"
+        } else {
+            "unknown"
+        };
+        json!({"version":seal["version"],"seal_id":seal["seal_id"],
+            "status":seal["status"],"job_id":seal["job_id"],
+            "attempt_id":seal["attempt_id"],"session_id":seal["session_id"],
+            "accounting_status":accounting})
     }
     /// Host-only completion fence. Never interrupts healthy work or invents usage.
     /// pstack's existing model/request hooks consume the now-empty admission list.
     pub async fn seal_v2(&self, id: &str) -> Result<Value> {
+        // Two 30-second observations plus lock/storage work fit inside this
+        // operation budget; the host control transport allows 120 seconds.
+        tokio::time::timeout(Duration::from_secs(90), self.seal_v2_inner(id))
+            .await
+            .context("Completion seal timed out; preserve and reconcile its durable fence")?
+    }
+    async fn seal_v2_inner(&self, id: &str) -> Result<Value> {
         let _gate = self.gate.lock().await;
         let mut job = self.get(id)?;
         let a = job
@@ -691,7 +730,7 @@ impl Engine {
             if current.revision != job.revision || !current.active() || current.state != "running" {
                 bail!("Completion seal replay lost its live lease/state");
             }
-            return Ok(seal);
+            return Ok(Self::v2_seal_summary(&seal));
         }
         seal["status"] = json!("sealed");
         seal["sealed_at"] = json!(now());
@@ -712,7 +751,7 @@ impl Engine {
             Store::save(tx, &mut current, "native completion independently sealed")?;
             Ok(())
         })?;
-        Ok(seal)
+        Ok(Self::v2_seal_summary(&seal))
     }
     pub(crate) fn v2_recovery(&self, job: &Job) -> Result<Option<Value>> {
         let Some(a) = job.attempt.as_ref().filter(|a| a.mode == MODE) else {

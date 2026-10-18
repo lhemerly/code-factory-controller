@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {awaitNativeCompletion} from './native-completion.mjs';
+import {readFile} from 'node:fs/promises';
+import {runInNewContext} from 'node:vm';
 const sid='owned',worktree='/work';
 function fixture(){
   const f={clock:0,polls:0,renewals:0,active:true,inbox:[],shells:[],revision:1};
@@ -41,4 +43,17 @@ test('explicit owner stop and resource failure remain authoritative',async()=>{
   await assert.rejects(awaitNativeCompletion(f.options),/Operator stopping/);
   const g=fixture();g.options.resources=async()=>{throw Error('Disk resource limit')};
   await assert.rejects(awaitNativeCompletion(g.options),/Disk resource/);
+});
+test('completion retains the existing repeated-tool-failure recovery guard',async()=>{
+  const f=fixture();f.options.toolContext=async()=>[{type:'assistant',content:Array.from({length:4},()=>({type:'tool',name:'read',state:{status:'error',error:{type:'tool.execution'}}}))}];
+  await assert.rejects(awaitNativeCompletion(f.options),/Repeated native tool failures/);
+});
+test('actual host seal transport outlasts two bounded observations; ordinary calls retain their budget',async()=>{
+  const source=await readFile(new URL('./spark-continuous.mjs',import.meta.url),'utf8');
+  const definition=source.split('\n').find(line=>line.trimStart().startsWith('async function op('));assert(definition);
+  // Scale seconds to milliseconds, preserving the real function's deadline
+  // selection and AbortSignal behavior without a minute-long test.
+  const op=runInNewContext(definition+'\nop',{controllerURL:'http://fixture',operator:'fixture',job:'fixture',dir:'/tmp',resolve:()=>'/tmp',atomic:async()=>{},AbortSignal:{timeout:ms=>AbortSignal.timeout(ms/1000)},fetch:async(_url,{signal})=>new Promise((ok,bad)=>{const timer=setTimeout(()=>ok({ok:true,json:async()=>({qualified:true})}),55);signal.addEventListener('abort',()=>{clearTimeout(timer);bad(Error('transport deadline'))},{once:true})})});
+  assert.equal((await op('seal-v2')).qualified,true);
+  await assert.rejects(op('status'),/transport deadline/);
 });

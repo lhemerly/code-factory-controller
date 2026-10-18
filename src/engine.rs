@@ -389,6 +389,7 @@ impl Engine {
             };
             status["execution_policy"] = json!({"mode":crate::opencode_v2::MODE,"models":models,"free_only":self.config.policy.free_only,"spend_ceiling":self.config.policy.spend_ceiling,"delegation":"unsupported","runtime":"2.0.29"});
             status["execution_seal"] = seal
+                .map(|value| value.map(|value| Self::v2_seal_summary(&value)))
                 .unwrap_or_else(|_| Some(json!({"status":"unknown"})))
                 .unwrap_or(Value::Null);
             status["execution_recovery"] = match self.v2_recovery(job) {

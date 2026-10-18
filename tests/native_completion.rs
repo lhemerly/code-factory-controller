@@ -54,7 +54,7 @@ async fn quiet_seal_persists_and_disables_future_inference_without_changing_acco
     let (f, _, server) = fixture().await;
     let seal = f.engine.seal_v2("job").await.unwrap();
     assert_eq!(seal["status"], "sealed");
-    assert_eq!(seal["accounting"]["status"], "settled_zero");
+    assert_eq!(seal["accounting_status"], "settled_zero");
     let status = f.engine.status(&f.engine.get("job").unwrap());
     assert_eq!(status["execution_policy"]["models"], json!([]));
     assert_eq!(f.engine.config.policy.models, vec!["opencode/big-pickle"]);
@@ -181,5 +181,42 @@ async fn expired_lease_is_never_renewed_by_sealing() {
     assert!(f.engine.seal_v2("job").await.is_err());
     assert_eq!(r.lock().unwrap().calls, calls);
     assert!(!f.engine.get("job").unwrap().active());
+    server.abort();
+}
+#[tokio::test]
+async fn large_valid_transcript_keeps_worker_and_operator_seal_responses_bounded() {
+    let (f, r, server) = fixture().await;
+    r.lock().unwrap().messages=(0..1400).map(|i|json!({"type":"assistant","id":format!("msg_{i}"),"model":{"providerID":"opencode","id":"big-pickle"},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"completed":1},"content":[]})).collect();
+    let seal = f.engine.seal_v2("job").await.unwrap();
+    assert!(serde_json::to_vec(&seal).unwrap().len() < 2048);
+    assert_eq!(seal["accounting_status"], "settled_zero");
+    let status = f.engine.status(&f.engine.get("job").unwrap());
+    assert!(serde_json::to_vec(&status).unwrap().len() < 262144);
+    assert!(status["execution_seal"].get("accounting").is_none());
+    assert_eq!(status["execution_seal"]["seal_id"], seal["seal_id"]);
+    server.abort();
+}
+#[tokio::test]
+async fn malformed_completion_intent_fences_inference_and_is_never_certified() {
+    let (f, _, server) = fixture().await;
+    let j = f.engine.get("job").unwrap();
+    let attempt = &j.attempt.as_ref().unwrap().attempt_id;
+    f.engine
+        .store
+        .transaction(|tx| {
+            tx.execute(
+                "INSERT INTO metadata(key,value) VALUES(?1,?2)",
+                rusqlite::params![
+                    format!("opencode-v2-seal:{attempt}"),
+                    "{\"status\":\"sealed\"}"
+                ],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let status = f.engine.status(&f.engine.get("job").unwrap());
+    assert_eq!(status["execution_policy"]["models"], json!([]));
+    assert_eq!(status["execution_seal"]["status"], "unknown");
+    assert!(f.engine.seal_v2("job").await.is_err());
     server.abort();
 }
