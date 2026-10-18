@@ -2687,6 +2687,12 @@ pub fn spark_pause(root: &Path, reason: Option<&str>) -> Result<String> {
 }
 
 pub fn spark_resume(root: &Path, reason: &str) -> Result<String> {
+    spark_resume_mode(root, reason, true)
+}
+pub(crate) fn spark_resume_preserving_pause(root: &Path, reason: &str) -> Result<String> {
+    spark_resume_mode(root, reason, false)
+}
+fn spark_resume_mode(root: &Path, reason: &str, clear_pause: bool) -> Result<String> {
     ensure!(
         !reason.trim().is_empty(),
         "resume requires an explicit --reason after inspecting recovery evidence"
@@ -2704,7 +2710,14 @@ pub fn spark_resume(root: &Path, reason: &str) -> Result<String> {
         "Unresolved active cycle; recover ownership/stop before resume. No automatic override."
     );
 
-    let _ = fs::remove_file(r.join("PAUSE"));
+    if clear_pause {
+        let _ = fs::remove_file(r.join("PAUSE"));
+    } else {
+        ensure!(
+            !r.join("PAUSE").exists(),
+            "Different explicit pause remains authoritative"
+        );
+    }
 
     let now_iso = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
     let operator_resume_raw = RawJson::Object(vec![

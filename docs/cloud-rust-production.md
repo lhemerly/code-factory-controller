@@ -76,6 +76,25 @@ those backup entries. Never let a legacy restorer interpret a pending native
 journal. Byte/mode rollback is checked; orphaned private backup files after a
 committed transaction are inert and may be reviewed separately.
 
+Native cooperative handoff now keeps a bound version-2 transaction in the private
+queue. Its manifest/state path, replacement pins and exact staged pause identity
+survive helper loss. Pause publication uses a durable same-directory inode witness;
+release detaches that exact file without unlinking a later user pause. Restart
+rechecks the same transaction and commits scheduling state before declaring pause
+release complete. Unknown or mismatched ownership remains fenced. Unbound pending
+legacy handoff records are preserved for explicit reconciliation, never silently
+adopted or overwritten. Completed records are archived. An interrupted native
+handoff must be resumed with its original pinned helper and transaction before
+switching implementations; do not delete its journal or manually clear pauses.
+Private staging files left before a journal commit are inert.
+
+After a late verifier stop, restart requires positive nonempty retained process
+history and no explicit owner pause before freshly checking the same approved
+baseline or independently audited delivered milestone. The old unknown result is
+never promoted to success, and no coding job or accepted milestone is duplicated.
+Filesystem wakeups follow the actual manifest, state and owner-record paths; an
+owned coordinator pidfd also wakes handoff when no final state event is written.
+
 The installer journals prior `current` and CLI links. If activation was interrupted,
 run the retained new installer's `update` command to restore that journal before
 retrying; a damaged or unverified staged release cannot become current. Active

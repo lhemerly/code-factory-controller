@@ -37,21 +37,25 @@ pub struct Signals {
 }
 impl Signals {
     pub fn wait(&self, fd: i32, seconds: Option<f64>) -> Result<()> {
+        self.wait_any(&[fd], seconds).map(|_| ())
+    }
+    pub fn wait_any(&self, descriptors: &[i32], seconds: Option<f64>) -> Result<Vec<bool>> {
         let timeout = seconds.map_or(-1, |s| {
             (s.max(0.001) * 1000.).ceil().min(i32::MAX as f64) as i32
         });
-        let mut fds = [
-            libc::pollfd {
-                fd,
+        let mut fds = descriptors
+            .iter()
+            .map(|fd| libc::pollfd {
+                fd: *fd,
                 events: libc::POLLIN,
                 revents: 0,
-            },
-            libc::pollfd {
-                fd: self.read.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            },
-        ];
+            })
+            .collect::<Vec<_>>();
+        fds.push(libc::pollfd {
+            fd: self.read.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        });
         let result = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) };
         ensure!(
             !stopped(),
@@ -60,7 +64,10 @@ impl Signals {
         if result < 0 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
             return Err(std::io::Error::last_os_error().into());
         }
-        Ok(())
+        Ok(fds[..descriptors.len()]
+            .iter()
+            .map(|fd| fd.revents != 0)
+            .collect())
     }
 }
 impl Drop for Signals {
@@ -372,19 +379,29 @@ impl Dispatcher {
             );
             if saved["commit"] == commit {
                 let result = &saved["result"];
-                ensure!(
-                    result["execution_unresolved"] != true,
-                    "saved goal verifier execution remains unresolved"
-                );
-                acceptance::audit_processes(&self.acceptance_path(g)?)?;
-                if result["passed"] == true {
-                    acceptance::audit_result(&self.policy(g)?, result, commit)?;
+                let history = acceptance::audit_processes(&self.acceptance_path(g)?)?;
+                if result["execution_unresolved"] == true {
+                    ensure!(
+                        history > 0,
+                        "Independent goal verifier execution unresolved; positive process history required"
+                    );
+                    ensure!(
+                        !root(g)?.join("PAUSE").exists()
+                            && self.read_status(g)?["status"] != "paused",
+                        "Explicit owner pause prevents verifier recovery"
+                    );
+                    // A positive stop permits a fresh check of this exact commit,
+                    // never reinterpret the old unknown outcome as acceptance.
                 } else {
-                    for receipt in result["receipts"].as_array().into_iter().flatten() {
-                        acceptance::audit_logs(receipt, false)?;
+                    if result["passed"] == true {
+                        acceptance::audit_result(&self.policy(g)?, result, commit)?;
+                    } else {
+                        for receipt in result["receipts"].as_array().into_iter().flatten() {
+                            acceptance::audit_logs(receipt, false)?;
+                        }
                     }
+                    return Ok(result.clone());
                 }
-                return Ok(result.clone());
             }
         }
         Ok(acceptance::run_acceptance(
@@ -881,13 +898,29 @@ impl Dispatcher {
     pub fn audit_completed(&mut self) -> Result<()> {
         for g in list(&self.m, "goals")?.clone() {
             let name = string(&g, "id")?;
-            let gs = self.s["goals"][name].clone();
+            let mut gs = self.s["goals"][name].clone();
             if gs["goal_acceptance"]["execution_unresolved"] == true {
-                acceptance::audit_processes(&self.acceptance_path(&g)?)?;
-                bail!(
-                    "Independent goal verifier execution unresolved; inspect retained process evidence before resume"
-                )
-            };
+                ensure!(
+                    acceptance::audit_processes(&self.acceptance_path(&g)?)? > 0,
+                    "Independent goal verifier execution unresolved; positive process history required"
+                );
+                ensure!(
+                    !root(&g)?.join("PAUSE").exists()
+                        && self.read_status(&g)?["status"] != "paused",
+                    "Explicit owner pause prevents verifier recovery"
+                );
+                if gs["baseline_evaluation"]["finished"] == false {
+                    self.evaluate_baseline(&g)?;
+                } else {
+                    self.finish(&g, &self.read_status(&g)?)?;
+                }
+                self.persist()?;
+                gs = self.s["goals"][name].clone();
+                ensure!(
+                    gs["goal_acceptance"]["execution_unresolved"] != true,
+                    "Independent goal verifier execution unresolved after evidence recheck"
+                );
+            }
             for milestone in list(&gs, "milestones")? {
                 let mut out = read(&path(milestone, "result")?)?;
                 out["_result_path"] = milestone["result"].clone();
@@ -1316,7 +1349,17 @@ pub fn run_cli(options: Options) -> Result<Value> {
 
 /// Explicit owner-only resume path; called by the CLI or exact owned handoff pauses.
 pub fn resume_goal(manifest: &Value, g: &Value) -> Result<()> {
+    resume_goal_mode(manifest, g, true)
+}
+pub(crate) fn resume_after_handoff(manifest: &Value, g: &Value) -> Result<()> {
+    resume_goal_mode(manifest, g, false)
+}
+fn resume_goal_mode(manifest: &Value, g: &Value, clear_pause: bool) -> Result<()> {
     let r = root(g)?;
+    ensure!(
+        clear_pause || !r.join("PAUSE").exists(),
+        "Different explicit pause remains authoritative"
+    );
     let p = r.join("status.json");
     if !p.exists() {
         return Ok(());
@@ -1372,10 +1415,12 @@ pub fn resume_goal(manifest: &Value, g: &Value) -> Result<()> {
         }
     }
     if status["status"] == "paused" || r.join("PAUSE").exists() {
-        crate::recovery::spark_resume(
-            &r,
-            "Owner explicitly launched the shared foreground dispatcher; inspect prior owned-stop evidence and continue preserved checkpoints",
-        )?;
+        let reason = "Owner explicitly launched the shared foreground dispatcher; inspect prior owned-stop evidence and continue preserved checkpoints";
+        if clear_pause {
+            crate::recovery::spark_resume(&r, reason)?;
+        } else {
+            crate::recovery::spark_resume_preserving_pause(&r, reason)?;
+        }
     }
     Ok(())
 }
