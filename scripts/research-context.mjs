@@ -4,6 +4,7 @@ import {readFile,readdir,mkdir} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
+import {fileURLToPath} from 'node:url';
 import {recoveryAction,replacementAllowed} from './free-model-policy.mjs';
 const digest=value=>createHash('sha256').update(value).digest('hex');
 const oid=/^[a-f0-9]{40}$/;
@@ -156,7 +157,7 @@ export async function buildResearchContext({root,repo,state,goal,cfg,beforeSeque
   if(record.sequence!==Number(directory))throw Error('Cycle sequence identity mismatch');
   if(!record.ended_utc)throw Error('Prior cycle has no terminal evidence: '+directory);
   if(record.phase==='context_preflight'||await readFile(resolve(dir,'pre-admission.json')).then(()=>true,e=>{if(e.code==='ENOENT')return false;throw e})){
-   const proof=JSON.parse(execFileSync(cfg.controller,['pre-admission-recovery','audit','--root',root,'--directory',dir,'--controller',cfg.controller],{encoding:'utf8',timeout:30000}));
+   const proof=JSON.parse(execFileSync('/usr/bin/python3',[fileURLToPath(new URL('./pre-admission-recovery.py',import.meta.url)),'audit','--root',root,'--directory',dir,'--controller',cfg.controller],{encoding:'utf8',timeout:30000}));
    completed.push({dir,record:{...record,_not_admitted:proof},result_sha256:digest(bytes)});continue;
   }
   const reconciled=await loadReconciledResult({dir,cfg,inspect});
@@ -169,10 +170,10 @@ export async function buildResearchContext({root,repo,state,goal,cfg,beforeSeque
   const unresolved='Prior native permission/ownership blocker remains unresolved';
   const interrupted=latest.error==='Error: Operator stopping';
   const proof=interrupted?'owner-interruption.json':'contract-only-resolution.json';
-  const resolver=interrupted?'owner-interruption':'permission-block-resolution';
+  const resolver=interrupted?'owner-interruption.py':'permission-block-resolution.py';
   try{await readFile(resolve(root,proof))}catch(error){if(error.code==='ENOENT')throw Error(unresolved);throw error}
   if(!Number.isSafeInteger(beforeSequence))throw Error(unresolved+': explicit next sequence required');
-  try{permissionResolution=JSON.parse(execFileSync(cfg.controller,[resolver,'--root',root,'--directory',latestExecution.dir,'--controller',cfg.controller,'--next-sequence',String(beforeSequence)],{encoding:'utf8',timeout:45000,stdio:['ignore','pipe','pipe']}))}catch{throw Error(unresolved+': owner-pinned resolution audit failed')}
+  try{permissionResolution=JSON.parse(execFileSync('/usr/bin/python3',[fileURLToPath(new URL('./'+resolver,import.meta.url)),'--root',root,'--directory',latestExecution.dir,'--controller',cfg.controller,'--next-sequence',String(beforeSequence)],{encoding:'utf8',timeout:45000,stdio:['ignore','pipe','pipe']}))}catch{throw Error(unresolved+': owner-pinned resolution audit failed')}
  }
 
  if(latest&&latest.status!=='all_free_unavailable'&&!(latest.status==='accepted'?recoveryAction(latest)==='continue':replacementAllowed(latest)))throw Error('Latest cycle lacks confirmed ownership/cleanup for admission');
