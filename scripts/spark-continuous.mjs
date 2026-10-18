@@ -10,7 +10,7 @@ import {buildResearchContext,createCycleDirectory,commitSubject,captureVerificat
 import {OwnershipLease,observeResearch,RepeatedToolFailure} from './continuous-ownership.mjs';
 import {awaitNativeCompletion,classifyNativeFailure} from './native-completion.mjs';
 import {sandbox,workerPermissions} from './spark-sandbox.mjs';
-import {startNativeExecution,stopNativeExecution,nativeExecutionBinding,assertImmutableSourceCandidate} from './native-execution.mjs';
+import {startNativeExecution,stopNativeExecution,nativeExecutionBinding,assertImmutableSourceCandidate,freezeNativeSource} from './native-execution.mjs';
 import {waitForFactoryPlugin} from './native-plugin-readiness.mjs';
 import {freeModels,route,failure,recoveryAction,replacementAllowed,approvedScope} from './free-model-policy.mjs';
 const oneCycle=process.argv.includes('--one-cycle');
@@ -72,7 +72,8 @@ async function runCycle(sequence){
  let controllerURL,nativeURL;
  async function op(name,body={}){const res=await fetch(controllerURL+'/operator/'+name,{method:'POST',headers:{authorization:'Bearer '+operator,'content-type':'application/json'},body:JSON.stringify({job_id:job,...body}),signal:AbortSignal.timeout(name==='seal-v2'?120000:40000)});const value=await res.json();await atomic(resolve(dir,'operator-'+name+'.json'),value);if(!res.ok)throw Error('Controller '+name+' HTTP '+res.status+': '+JSON.stringify(value));return value}
  async function startNative(location,factory=false,readOnly=false){
-  const args=[...sandbox(cfg,repo,location,profile,protectedPaths,{readOnly}),'serve','--hostname','127.0.0.1','--port',new URL(nativeURL).port];
+  const mounts=sandbox(cfg,repo,location,profile,protectedPaths);
+  const args=[...(readOnly?freezeNativeSource(mounts,location):mounts),'serve','--hostname','127.0.0.1','--port',new URL(nativeURL).port];
   const vars={...nativeEnv,...(factory?{PSTACK_FACTORY_URL:controllerURL,PSTACK_FACTORY_PROJECT:cfg.project_id??'spark-full-scroll',PSTACK_FACTORY_TOKEN:worker}:{})};
   const ready=o=>{const p=/server password (\S+)/.exec(o);return o.includes('server listening on')&&p?{password:p[1]}:undefined};
   const start=factory?await startNativeExecution({controller:cfg.controller,argv:['/usr/bin/bwrap',...args],env:vars,cwd:location,directory:dir,commit:state.base,ready,shouldStop:()=>shutdown,onProcess:p=>processes.push(p),red}):await launch('/usr/bin/bwrap',args,vars,location,ready);

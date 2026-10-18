@@ -59,3 +59,12 @@ export function nativeExecutionBinding(p){const h=p._ownedNative;if(!h?.started)
 export function assertImmutableSourceCandidate(raw){
  if(/^:\d{6} 120000 /m.test(raw))throw Error('Changed source symlink cannot satisfy immutable source barrier');
 }
+
+// Tighten only the existing writable-worktree mount. Keep the frozen sandbox
+// builder and every unrelated mount/permission byte-for-byte authoritative.
+export function freezeNativeSource(args,work){
+ const copy=[...args];let found=0;
+ for(let i=0;i<copy.length-2;i++)if(copy[i]==='--bind'&&copy[i+1]===work&&copy[i+2]===work){copy[i]='--ro-bind';found++}
+ if(found!==1)throw Error('Native writable source mount ownership unknown');
+ return copy;
+}
