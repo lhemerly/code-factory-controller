@@ -378,7 +378,19 @@ impl Engine {
             .as_ref()
             .is_some_and(|a| a.mode == crate::opencode_v2::MODE)
         {
-            status["execution_policy"] = json!({"mode":crate::opencode_v2::MODE,"models":self.config.policy.models,"free_only":self.config.policy.free_only,"spend_ceiling":self.config.policy.spend_ceiling,"delegation":"unsupported","runtime":"2.0.29"});
+            // A durable completion fence disables future inference in pstack's
+            // existing model/http/websocket hooks. Historical accounting still
+            // uses the original immutable configured model policy.
+            let seal = self.v2_seal(job);
+            let models = if matches!(&seal, Ok(None)) {
+                self.config.policy.models.clone()
+            } else {
+                vec![]
+            };
+            status["execution_policy"] = json!({"mode":crate::opencode_v2::MODE,"models":models,"free_only":self.config.policy.free_only,"spend_ceiling":self.config.policy.spend_ceiling,"delegation":"unsupported","runtime":"2.0.29"});
+            status["execution_seal"] = seal
+                .unwrap_or_else(|_| Some(json!({"status":"unknown"})))
+                .unwrap_or(Value::Null);
             status["execution_recovery"] = match self.v2_recovery(job) {
                 Ok(value) => value.unwrap_or(Value::Null),
                 Err(_) => {

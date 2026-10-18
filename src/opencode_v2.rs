@@ -578,6 +578,12 @@ impl Engine {
         let Some(attempt) = job.attempt.as_ref().filter(|a| a.mode == MODE) else {
             return Ok(());
         };
+        if self
+            .v2_seal(job)?
+            .is_some_and(|seal| seal["status"] != "sealed")
+        {
+            bail!("V2 completion seal unresolved; acceptance remains fenced");
+        }
         let binding = self.v2_binding(job)?;
         let observation = self
             .observe_v2(
@@ -591,6 +597,122 @@ impl Engine {
             )
             .await?;
         require_settled(&observation.accounting)
+    }
+    pub(crate) fn v2_seal(&self, job: &Job) -> Result<Option<Value>> {
+        let Some(a) = job.attempt.as_ref().filter(|a| a.mode == MODE) else {
+            return Ok(None);
+        };
+        self.store.transaction(|tx| {
+            let value: Option<String> = tx
+                .query_row(
+                    "SELECT value FROM metadata WHERE key=?1",
+                    [format!("opencode-v2-seal:{}", a.attempt_id)],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            value
+                .map(|v| serde_json::from_str(&v).map_err(Into::into))
+                .transpose()
+        })
+    }
+    /// Host-only completion fence. Never interrupts healthy work or invents usage.
+    /// pstack's existing model/request hooks consume the now-empty admission list.
+    pub async fn seal_v2(&self, id: &str) -> Result<Value> {
+        let _gate = self.gate.lock().await;
+        let mut job = self.get(id)?;
+        let a = job
+            .attempt
+            .as_ref()
+            .filter(|a| a.mode == MODE)
+            .context("V2 attempt")?;
+        let session = a.session_id.clone().context("V2 session unbound")?;
+        let attempt = a.attempt_id.clone();
+        let binding = self.v2_binding(&job)?;
+        if !job.active()
+            || job.state != "running"
+            || job.candidate.is_some()
+            || job.verification_pending.is_some()
+            || job.integrated_commit.is_some()
+        {
+            bail!("Completion seal requires a live, unsubmitted V2 attempt");
+        }
+        let prior = self.v2_seal(&job)?;
+        let mut seal = if let Some(prior) = prior {
+            if prior["attempt_id"] != attempt
+                || prior["session_id"] != session
+                || prior["binding"] != binding
+            {
+                bail!("V2 completion seal identity changed");
+            }
+            prior
+        } else {
+            // Refuse to freeze a cached terminal outcome while a continuation,
+            // inbox, shell, or unsettled usage is still observable.
+            let observation = self
+                .observe_v2(&job, &session, Some(&binding), true)
+                .await?;
+            require_settled(&observation.accounting)?;
+            let intent = json!({"version":1,"seal_id":new_id(),"job_id":id,
+                "attempt_id":attempt,"session_id":session,"binding":binding,
+                "status":"fencing","requested_at":now(),"before":observation.evidence});
+            self.store.transaction(|tx| {
+                let mut current = Store::load(tx, id)?;
+                if current.revision != job.revision
+                    || !current.active()
+                    || current.state != "running"
+                {
+                    bail!("Completion seal state changed; reconcile before candidate capture");
+                }
+                tx.execute(
+                    "INSERT INTO metadata(key,value) VALUES(?1,?2)",
+                    params![
+                        format!("opencode-v2-seal:{attempt}"),
+                        serde_json::to_string(&intent)?
+                    ],
+                )?;
+                Store::save(
+                    tx,
+                    &mut current,
+                    "native model admission fenced before candidate capture",
+                )?;
+                job = current;
+                Ok(())
+            })?;
+            intent
+        };
+        // Re-observe after the durable fence; a race fails closed and retains
+        // the intent. Repeating this read-only qualification never replays work.
+        let observation = self
+            .observe_v2(&job, &session, Some(&binding), true)
+            .await?;
+        require_settled(&observation.accounting)?;
+        if seal["status"] == "sealed" {
+            let current = self.get(id)?;
+            if current.revision != job.revision || !current.active() || current.state != "running" {
+                bail!("Completion seal replay lost its live lease/state");
+            }
+            return Ok(seal);
+        }
+        seal["status"] = json!("sealed");
+        seal["sealed_at"] = json!(now());
+        seal["evidence"] = observation.evidence;
+        seal["accounting"] = observation.accounting;
+        self.store.transaction(|tx| {
+            let mut current = Store::load(tx, id)?;
+            if current.revision != job.revision || !current.active() || current.state != "running" {
+                bail!("Completion seal state changed; preserve the inference fence");
+            }
+            tx.execute(
+                "UPDATE metadata SET value=?2 WHERE key=?1",
+                params![
+                    format!("opencode-v2-seal:{attempt}"),
+                    serde_json::to_string(&seal)?
+                ],
+            )?;
+            Store::save(tx, &mut current, "native completion independently sealed")?;
+            Ok(())
+        })?;
+        Ok(seal)
     }
     pub(crate) fn v2_recovery(&self, job: &Job) -> Result<Option<Value>> {
         let Some(a) = job.attempt.as_ref().filter(|a| a.mode == MODE) else {

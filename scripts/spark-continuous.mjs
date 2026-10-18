@@ -7,7 +7,8 @@ import {createHash,randomBytes} from 'node:crypto';
 import {createServer} from 'node:net';
 import {OpenCode} from './opencode-v2-client.mjs';
 import {buildResearchContext,createCycleDirectory,commitSubject,captureVerificationDiagnostics} from './research-context.mjs';
-import {OwnershipLease,observeResearch,awaitNativeShells,RepeatedToolFailure} from './continuous-ownership.mjs';
+import {OwnershipLease,observeResearch,RepeatedToolFailure} from './continuous-ownership.mjs';
+import {awaitNativeCompletion} from './native-completion.mjs';
 import {sandbox,workerPermissions} from './spark-sandbox.mjs';
 import {waitForFactoryPlugin} from './native-plugin-readiness.mjs';
 import {freeModels,classify,route,failure,recoveryAction,replacementAllowed,approvedScope} from './free-model-policy.mjs';
@@ -117,13 +118,16 @@ async function runCycle(sequence){
   phase='native';out.status='running';await cycleSave();await event('native_started',{sequence,model:out.model,worktree:work,job,session:child.id});
   await client.session.command({sessionID:parent.id,name:'pstack-factory-start',text:'cycle-'+sequence});
   child=await observeResearch({get:()=>client.session.get({sessionID:child.id}),toolContext:()=>client.session.context({sessionID:child.id}),checkpoint:async session=>{out.native_session=safe(session);await atomic(resolve(dir,'native-session.json'),safe(session));await cycleSave()},resources:async()=>{if(!await diskOK())throw Error('Disk resource limit reached')},lease,shouldStop:()=>shutdown,sleep:delay});
-  const context=safe(await client.session.context({sessionID:child.id}));await atomic(resolve(dir,'native-context.json'),context);out.native_session=safe(await client.session.get({sessionID:child.id}));out.usage={cost:out.native_session.cost??null,tokens:out.native_session.tokens??null,model:out.native_session.model??null};
+  phase='native_completion';await cycleSave();
+  child=await awaitNativeCompletion({sessionID:child.id,worktree:work,getSession:()=>client.session.get({sessionID:child.id}),getActive:()=>client.session.active(),getInbox:()=>client.session.inbox.list({sessionID:child.id}),getShells:()=>client.shell.list({location:{directory:work}}),checkpoint:observation=>atomic(resolve(dir,'native-completion.json'),safe(observation)),resources:async()=>{if(!await diskOK())throw Error('Disk resource limit reached')},lease,shouldStop:()=>shutdown,sleep:delay});
+  const context=safe(await client.session.context({sessionID:child.id}));await atomic(resolve(dir,'native-context.json'),context);out.native_session=safe(child);out.usage={cost:child.cost??null,tokens:child.tokens??null,model:child.model??null};
   if(shutdown)throw Error('Operator stopping');if(child.outcome!=='succeeded'){const errors=context.filter(m=>['assistant','idle'].includes(m.type)&&m.error).map(m=>m.error);throw Error(child.outcome?JSON.stringify(errors.length?errors:[{type:'native.failed',message:'Native outcome '+child.outcome}]):'Native execution ended without a terminal outcome')}
-  phase='native_shells';await cycleSave();
-  await awaitNativeShells({get:()=>client.shell.list({location:{directory:work}}),worktree:work,checkpoint:observation=>atomic(resolve(dir,'native-shells.json'),observation),resources:async()=>{if(!await diskOK())throw Error('Disk resource limit reached')},lease,shouldStop:()=>shutdown,sleep:delay});
   // Verification effects already have their own bounded trusted executor. Avoid heartbeat
   // revisions racing an in-flight receipt; renew before each verification stage.
   await lease.stop();await lease.tick(true);
+  // Persistently fence new model requests through the existing pstack authorizer,
+  // then independently re-observe quiet execution/accounting before touching Git.
+  phase='native_sealing';await cycleSave();out.native_seal=await op('seal-v2');
   phase='verification';out.status='verifying';await cycleSave();
   // Commit only approved tracked/additional source paths; never ignored data/native configuration.
   const changed=git(work,'status','--porcelain','--untracked-files=all');out.diff_status=changed;
