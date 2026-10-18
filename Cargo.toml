@@ -28,3 +28,8 @@ uuid = { version = "=1.28.0", features = ["v4", "serde"] }
 
 [dev-dependencies]
 tempfile = "=3.27.0"
+
+# Development executables also audit pinned binaries at ownership boundaries.
+# Keep SHA-256 efficient there without weakening or caching integrity checks.
+[profile.dev.package.sha2]
+opt-level = 3

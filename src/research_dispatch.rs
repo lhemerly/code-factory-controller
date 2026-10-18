@@ -1420,9 +1420,9 @@ fn write_owner(
     } else {
         identity(std::process::id())
     };
+    let binding = owner_binding(manifest_path, &queue.root, manifest, executable)?;
     let record = json!({"state":state,"process":process,
-        "dispatcher_sha256":crate::recovery::sha(executable)?,
-        "binding":owner_binding(manifest_path,&queue.root,manifest,executable)?});
+        "dispatcher_sha256":binding["source_sha256"],"binding":binding});
     let p = queue.root.join("owner.json");
     if read(&p).ok().as_ref() != Some(&record) {
         save(&p, &record)?;
