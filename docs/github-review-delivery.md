@@ -63,7 +63,8 @@ or auto-resolve review threads. An explicit approved task can create a first bat
 when the PR has no comments, without inventing reviewer feedback.
 
 Publication re-audits the exact real controller receipt and delivered archive,
-checks unchanged pinned host inputs, base ancestry and approved diff paths, and
+checks unchanged pinned host inputs, the original bound PR-head template, repair-base
+ancestry and the full original-head diff scope, and
 rejects operational narrative in project-facing text using owner-defined patterns.
 An optional approved `commit_subject` gives the new verified commit its product title;
 existing research configurations retain their current subjects. Operational cycle
