@@ -42,11 +42,14 @@ fn card(label: &str, value: &str, note: &str) -> String {
     )
 }
 fn comma(v: &Value) -> String {
-    let Some(n) = v.as_i64() else {
+    let Some(n) = v.as_number().filter(|n| n.is_i64() || n.is_u64()) else {
         return "unknown".into();
     };
-    let digits = n.to_string();
-    let mut out = String::new();
+    let number = n.to_string();
+    let (sign, digits) = number
+        .strip_prefix('-')
+        .map_or(("", number.as_str()), |digits| ("-", digits));
+    let mut out = sign.to_owned();
     for (i, c) in digits.chars().enumerate() {
         if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',')

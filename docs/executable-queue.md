@@ -57,6 +57,17 @@ controller-only supervisor migrations may change. Unrelated/global files and goa
 permission changes are rejected. Exact old pins, all goal locks and fresh Factory
 audits gate promotion. No fetched script or arbitrary update command executes.
 
+Keep the active coordinator executable at its immutable path and retain its trusted
+pin. A controller upgrade must use a distinct versioned destination in the approved
+controller directory; a new destination keeps the staged file's executable mode.
+Controller artifacts without owner-execute permission are rejected before promotion.
+Boundary promotion and journal rollback reject the active executable's path and
+inode aliases before replacing it. Promote and audit the versioned controller first,
+then transfer ownership using the bound `queue-handoff` transaction. An old recovery
+journal that targets its recovering process's executable remains unresolved for
+explicit owner reconciliation; restoring the same bytes would still unlink the
+running executable's inode.
+
 Promotion and intake enrollment have fsynced recovery journals. An interrupted
 source update restores the known-good files/manifest/state before retrying; a failed
 post-promotion audit rolls back. Interrupted enrollment replays the exact approved
