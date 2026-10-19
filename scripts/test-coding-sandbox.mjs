@@ -21,6 +21,8 @@ try{
  for(const value of ['',42,'relative-data'])assert.throws(()=>sandbox({...cfg,data:value},repo,work,profile,[]),/absolute paths/);
  const research=sandbox({...cfg,venv:'/approved/venv',data:'/approved/data'},repo,work,profile,[]);
  assert(research.includes('/approved/data'));assert(research.includes('/approved/venv'));
+ const resolver=args.indexOf('/run/systemd/resolve');
+ assert.equal(args[resolver-1],'--ro-bind-try','systemd resolver mount is optional and read-only');
  args.pop();
  const code=`import pathlib,errno,json
 w=pathlib.Path(${JSON.stringify(work)});result={}
@@ -31,6 +33,7 @@ for name in ['.git','opencode.json','frozen.py']:
 result['operator_secret_hidden']=not pathlib.Path(${JSON.stringify(resolve(root,'operator-secret'))}).exists()
 result['no_research_resources_required']=not (w/'data').exists() and not (w/'.venv').exists()
 result['actual_code_cwd']=pathlib.Path.cwd()==w
+result['resolver_readable']=pathlib.Path('/etc/resolv.conf').is_file()
 print(json.dumps(result))
 `;
  const observed=JSON.parse(execFileSync('/usr/bin/bwrap',[...args,'/usr/bin/python3','-c',code],{encoding:'utf8'}));
