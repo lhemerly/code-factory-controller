@@ -2,10 +2,10 @@
 import {mkdtemp,mkdir,writeFile,readFile,rm} from 'node:fs/promises';import {resolve} from 'node:path';import {tmpdir} from 'node:os';import {execFileSync} from 'node:child_process';import assert from 'node:assert/strict';import {sandbox} from './spark-sandbox.mjs';
 const root=await mkdtemp(resolve(tmpdir(),'spark-sandbox-')),repo=resolve(root,'repository'),work=resolve(root,'work'),profile=resolve(root,'native');
 try{
- for(const p of [repo,resolve(repo,'.git'),work,profile,resolve(work,'.opencode/pstack-admission'),resolve(root,'data'),resolve(root,'venv')])await mkdir(p,{recursive:true});
+ for(const p of [repo,resolve(repo,'.git'),work,profile,resolve(work,'.opencode/pstack-admission'),resolve(root,'data'),resolve(root,'venv'),resolve(root,'plugin'),resolve(root,'native-bin')])await mkdir(p,{recursive:true});
  for(const p of ['.git','opencode.json','frozen.py'])await writeFile(resolve(work,p),'frozen');
  await writeFile(resolve(root,'operator-secret'),'outside-boundary');await writeFile(resolve(root,'data/ct'),'original');
- const cfg={plugin:resolve(import.meta.dirname,'../../opencode-pstack'),native:resolve(import.meta.dirname,'../../runtime/node_modules/@opencode/cli-linux-x64/bin/opencode'),data:resolve(root,'data'),venv:resolve(root,'venv')};
+ const cfg={plugin:resolve(root,'plugin'),native:resolve(root,'native-bin/opencode'),data:resolve(root,'data'),venv:resolve(root,'venv')};
  const code=`import os,pathlib,json,errno
 work=pathlib.Path(${JSON.stringify(work)});results={}
 for name in ['.git','opencode.json','frozen.py']:

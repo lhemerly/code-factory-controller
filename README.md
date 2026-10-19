@@ -212,14 +212,14 @@ The state distinguishes completed jobs from the broad goal. Exhausting tasks wit
 The goal manifest must declare an absolute `repository`, nonempty `required_evidence`, and nonempty `completion_checks`. Each host-approved check has `id`, `evidence_type`, `argv`, and optional `timeout_seconds` (1–3600). All required evidence types must be covered. Every command runs without controller credentials in a fresh checkout of the exact final integration commit. Logs and command receipts remain beside the goal state. Commands must exit zero and emit a single JSON object on stdout:
 
 ```json
-{"passed":true,"skipped":false,"commit":"<exact tested commit>","evidence_type":"cpu_tests"}
+{"passed":true,"skipped":false,"commit":"<exact tested commit>","evidence_type":"cpu_tests","executed":12,"failed":0}
 ```
 
 For a goal requiring Vulkan execution, include `vulkan_execution` in `required_evidence`. Shader compilation, CPU reference tests and a Vulkan inventory probe cannot satisfy it. The trusted device execution verifier must additionally return a positive integer `gpu_dispatches`, `validation_passed:true`, and a `device` object containing `name`, `vendor_id` and `device_id`, based on actual dispatch/output validation. Missing devices, zero dispatches and skipped tests fail acceptance. These fields are validated from host-approved verifier output, not worker messages. The trusted verifier remains responsible for exercising representative behavior and authenticating its device/result evidence.
 
 Completion requirements cannot be removed on resume, and previously approved completion commands cannot be changed or removed; additional checks may be appended. Existing old manifests with no final suite no longer qualify for completion. An optional `verification_environment` allows only PATH, Rust/Cargo paths/toolchain, Vulkan driver selection and XDG runtime path; operator/worker capabilities are not inherited.
 
-The runner records the canonical repository and effective verifier environment, including PATH, with an acceptance-policy digest. Resume rejects changes to those inputs. Older states record their first policy snapshot and require fresh acceptance before retaining a previous completion claim. Setup, missing-command, timeout and malformed-result errors persist as `acceptance_failed` with retained logs and retry guidance. Final evidence must explicitly report `skipped:false`; any provided test counts must also report positive execution and zero failures/skips.
+The runner records the canonical repository and effective verifier environment, including PATH, with an acceptance-policy digest. Resume rejects changes to those inputs. Older states record their first policy snapshot and require fresh acceptance before retaining a previous completion claim. Setup, missing-command, timeout and malformed-result errors persist as `acceptance_failed` with retained logs and retry guidance. Final evidence must explicitly report `skipped:false` or `skipped_count:0`, with no contradictory skip fields. Non-Vulkan checks must report integer `executed > 0` and integer `failed == 0`; any provided counts must report positive execution and zero failures/skips.
 
 A milestone's `done` means its declared independent checks and archive delivery passed. It does not mean the broad backend goal is finished. Backend acceptance must include the required CPU compatibility and Vulkan execution checks in its final contract.
 
@@ -248,7 +248,7 @@ The test suite covers durable replay, restart recovery, independent verification
 
 Live Big Pickle runs completed a bounded hardening change in the plugin repository both without and with plugin assistance. Both passed trusted candidate and integrated checks, delivered a checked archive, and survived a controller-process restart. The source repository was used in a disposable clone; the delivered change is a local artifact, not a claim that its upstream branch was changed. See [validation evidence and limits](docs/validation.md).
 
-An opt-in [foreground shared research launcher](docs/research-dispatch.md) coordinates a fixed approved goal list with one shared worker slot and independent acceptance. Dynamic multi-project scheduling, PR/deployment delivery adapters, paid models, distributed workers and a web dashboard remain outside this release. [MIT license](LICENSE); [dependency and contract notices](THIRD_PARTY_NOTICES.md).
+An opt-in [foreground shared research launcher](docs/research-dispatch.md) coordinates a fixed approved goal list with one shared worker slot and independent acceptance. The [local read-only dashboard](dashboard/README.md) displays existing state and receipts. Opt-in [GitHub review delivery](docs/github-review-delivery.md) and [verified main publication](docs/main-publication.md) require explicit owner configuration. Dynamic multi-project scheduling, deployment adapters, paid models and distributed workers remain outside this release. See [release changes](CHANGELOG.md). [MIT license](LICENSE); [dependency and contract notices](THIRD_PARTY_NOTICES.md).
 
 ## Private review snapshot
 

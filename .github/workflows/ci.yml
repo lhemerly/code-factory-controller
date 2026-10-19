@@ -38,6 +38,12 @@ jobs:
       - run: node scripts/test-native-plugin-readiness-recovery.mjs
       - run: node scripts/test-native-plugin-readiness-failclosed.mjs
       - run: node scripts/test-native-session-inventory.mjs
+      - name: Test worker filesystem and PID boundaries (no providers)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          node scripts/test-coding-sandbox.mjs
+          node scripts/test-spark-sandbox.mjs
       - name: Test local Bonsai OpenCode transport (mock inference only)
         run: |
           npm install --ignore-scripts --no-audit --no-fund --prefix "$RUNNER_TEMP/bonsai-runtime" opencode-linux-x64-baseline@1.19.0
