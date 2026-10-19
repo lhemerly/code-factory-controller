@@ -41,7 +41,16 @@ jobs:
       - name: Test worker filesystem and PID boundaries (no providers)
         run: |
           sudo apt-get update
-          sudo apt-get install -y bubblewrap
+          sudo apt-get install -y apparmor bubblewrap
+          # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor.
+          # Permit the test launcher specifically; keep the tests unprivileged.
+          sudo tee /etc/apparmor.d/code-factory-ci-bwrap > /dev/null <<'PROFILE'
+          abi <abi/4.0>,
+          profile code-factory-ci-bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          PROFILE
+          sudo apparmor_parser --replace /etc/apparmor.d/code-factory-ci-bwrap
           node scripts/test-coding-sandbox.mjs
           node scripts/test-spark-sandbox.mjs
       - name: Test local Bonsai OpenCode transport (mock inference only)
