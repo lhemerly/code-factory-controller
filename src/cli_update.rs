@@ -54,7 +54,13 @@ impl Installer {
             executable: std::env::current_exe()?,
         })
     }
-    fn command(&self, command: &str, args: &[&str], cwd: &Path, timeout: u64) -> Result<Vec<u8>> {
+    pub fn command(
+        &self,
+        command: &str,
+        args: &[&str],
+        cwd: &Path,
+        timeout: u64,
+    ) -> Result<Vec<u8>> {
         let mut argv = vec![];
         for k in [
             "PATH",
@@ -66,6 +72,13 @@ impl Installer {
         ] {
             if let Some(v) = std::env::var_os(k) {
                 argv.push(format!("{k}={}", v.to_string_lossy()))
+            }
+        }
+        if command == "systemctl" || command.ends_with("/systemctl") {
+            for k in ["XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"] {
+                if let Some(v) = std::env::var_os(k) {
+                    argv.push(format!("{k}={}", v.to_string_lossy()))
+                }
             }
         }
         argv.push(command.into());

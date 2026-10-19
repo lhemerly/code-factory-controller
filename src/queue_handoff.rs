@@ -555,14 +555,18 @@ pub fn handoff_resume_allowed(
     if gs["state"] != "paused" {
         return Ok(matches!(gs["state"].as_str(), Some("ready" | "waiting")));
     }
-    Ok(entry["expected_sequence"].is_u64()
-        && (entry["expected_sequence"] == status["sequence"]
-            || (entry["observed_sequence"].is_u64()
-                && entry["observed_sequence"] == status["sequence"]
-                && entry["observed_sequence"]
-                    .as_u64()
-                    .and_then(|n| n.checked_add(1))
-                    == entry["expected_sequence"].as_u64()))
+    let expected = entry["expected_sequence"].as_u64();
+    let observed = entry["observed_sequence"].as_u64();
+    let status_seq = status["sequence"].as_u64();
+    let seq_matches = match (expected, status_seq) {
+        (Some(exp), Some(act)) => {
+            exp == act
+                || exp.checked_add(1) == Some(act)
+                || observed.is_some_and(|obs| obs == act || obs.checked_add(1) == Some(act))
+        }
+        _ => false,
+    };
+    Ok(seq_matches
         && status["pause_observation"]["text_sha256"]
             == json!(crate::model::digest(string(entry, "text")?))
         && status["pause_observation"]["transaction"] == *transaction

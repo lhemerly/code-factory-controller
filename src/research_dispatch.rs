@@ -653,6 +653,44 @@ impl Dispatcher {
         gs["reason"] = json!(reason);
         Ok(())
     }
+    pub(crate) fn record_baseline_pause(&mut self, g: &Value, pause_file: &Path) -> Result<()> {
+        let bytes = fs::read(pause_file)?;
+        let text = String::from_utf8_lossy(&bytes);
+        let transaction = text
+            .split("transaction ")
+            .nth(1)
+            .and_then(|s| s.split(';').next())
+            .map(|s| s.trim().to_string())
+            .filter(|t| uuid::Uuid::parse_str(t).is_ok());
+        let text_sha256 = crate::model::digest(&bytes);
+        let r = root(g)?;
+        let status_path = r.join("status.json");
+        let mut status = if status_path.exists() {
+            read(&status_path)?
+        } else {
+            json!({
+                "version": 1,
+                "sequence": 0,
+                "circuits": {},
+                "accepted": [],
+                "repair_count": 0,
+                "base": g["initial_base"],
+                "status": "starting",
+                "goal_status": "unresolved",
+                "current": null,
+            })
+        };
+        status["status"] = json!("paused");
+        status["pause_reason"] = json!("Operator PAUSE file");
+        status["pause_observation"] = json!({
+            "sequence": status.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0),
+            "text_sha256": text_sha256,
+            "transaction": transaction,
+        });
+        save(&status_path, &status)?;
+        self.pause(g, "Operator PAUSE file")?;
+        Ok(())
+    }
     fn run_cycle(&mut self, g: &Value) -> Result<()> {
         ensure!(!stopped(), "Owner stopped before admission");
         let r = root(g)?;
@@ -1055,8 +1093,19 @@ impl Dispatcher {
             if g["initial_base"].is_string()
                 && self.s["goals"][name]["baseline_evaluation"].is_null()
             {
-                if prior["status"] == "paused" || root(&g)?.join("PAUSE").exists() {
-                    self.pause(&g, "Owner pause before baseline evaluation")?;
+                let pause_file = root(&g)?.join("PAUSE");
+                if prior["status"] == "paused" || pause_file.exists() {
+                    if pause_file.exists() {
+                        self.record_baseline_pause(&g, &pause_file)?;
+                    } else {
+                        self.pause(
+                            &g,
+                            prior["pause_reason"]
+                                .as_str()
+                                .unwrap_or("Owner pause before baseline evaluation"),
+                        )?;
+                    }
+                    self.persist()?;
                     return Ok(());
                 }
                 ensure!(
@@ -1433,7 +1482,7 @@ fn write_owner(
 pub fn resume_goal(manifest: &Value, g: &Value) -> Result<()> {
     resume_goal_mode(manifest, g, true, None)
 }
-pub(crate) fn resume_after_handoff(manifest: &Value, g: &Value, transaction: &str) -> Result<()> {
+pub fn resume_after_handoff(manifest: &Value, g: &Value, transaction: &str) -> Result<()> {
     uuid::Uuid::parse_str(transaction)?;
     resume_goal_mode(
         manifest,

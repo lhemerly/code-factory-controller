@@ -1,6 +1,6 @@
 //! Pure dashboard calculations. Unknown accounting and timestamps remain visible.
 use anyhow::{Result, ensure};
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use serde_json::{Value, json};
 pub fn text(v: &Value) -> String {
     match v {
@@ -44,6 +44,15 @@ pub fn parse_ts(v: &Value) -> Option<f64> {
         if let Ok(d) = NaiveDateTime::parse_from_str(s, format) {
             return Some(d.and_utc().timestamp_micros() as f64 / 1e6);
         }
+    }
+    // The legacy loader accepts calendar dates as midnight UTC. Require the
+    // canonical spelling and Python's year range, rather than accepting loose
+    // chrono spellings such as 2026-1-1 or year zero.
+    if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d")
+        && (1..=9999).contains(&d.year())
+        && d.format("%Y-%m-%d").to_string() == s
+    {
+        return Some(d.and_hms_opt(0, 0, 0)?.and_utc().timestamp_micros() as f64 / 1e6);
     }
     None
 }
@@ -219,9 +228,28 @@ pub fn accounting(usage: &Value) -> &'static str {
         }
     }
 }
+fn token_integer(v: &Value) -> Option<i128> {
+    if let Some(n) = v.as_i64() {
+        Some(i128::from(n))
+    } else if let Some(n) = v.as_u64() {
+        Some(i128::from(n))
+    } else if let Some(n) = v.as_f64() {
+        // Match legacy int(float) truncation, without saturating out-of-range
+        // values or coercing exact integer JSON through floating point.
+        (n.is_finite() && n >= i128::MIN as f64 && n < -(i128::MIN as f64))
+            .then(|| n.trunc() as i128)
+    } else {
+        Some(0) // Legacy ignores nonnumeric fields, including booleans.
+    }
+}
+fn token_json(n: Option<i128>) -> Value {
+    n.and_then(serde_json::Number::from_i128)
+        .map(Value::Number)
+        .unwrap_or(Value::Null)
+}
 pub fn build_tokens(cycles: &[Value]) -> Value {
     let mut counts = json!({"settled":0,"unknown":0,"missing":0,"unreported":0});
-    let mut sums = [0i64; 5];
+    let mut sums = [Some(0i128); 5];
     let mut costs = vec![];
     let mut used = 0;
     let mut recovered = 0;
@@ -247,7 +275,7 @@ pub fn build_tokens(cycles: &[Value]) -> Value {
         .iter()
         .enumerate()
         {
-            sums[i] += v.as_f64().unwrap_or(0.) as i64
+            sums[i] = sums[i].and_then(|sum| sum.checked_add(token_integer(v)?))
         }
         if let Some(cost) = usage["cost"].as_f64() {
             costs.push(cost)
@@ -259,10 +287,22 @@ pub fn build_tokens(cycles: &[Value]) -> Value {
         "reasoning reported separately and not added to output (no double counting)".into(),
         "cache reads are served context, not newly generated tokens".into(),
     ];
+    let total_tokens = [0, 1, 3, 4]
+        .into_iter()
+        .try_fold(0i128, |sum, i| sum.checked_add(sums[i]?));
+    let numeric_totals = sums.map(token_json);
+    let numeric_total = token_json(total_tokens);
+    let out_of_range =
+        used > 0 && (numeric_totals.iter().any(Value::is_null) || numeric_total.is_null());
     let (state, note) = if used == 0 {
         (
             "unknown",
             "no usage record in state files — unknown, not zero".into(),
+        )
+    } else if out_of_range {
+        (
+            "partial",
+            "token totals exceed the exact JSON integer range — affected fields are unknown, not rounded or wrapped".into(),
         )
     } else if counts["missing"] != 0 {
         (
@@ -322,7 +362,7 @@ pub fn build_tokens(cycles: &[Value]) -> Value {
     let totals = if used == 0 {
         json!({"input":null,"output":null,"reasoning":null,"cache_read":null,"cache_write":null,"total":null,"generated":null})
     } else {
-        json!({"input":sums[0],"output":sums[1],"reasoning":sums[2],"cache_read":sums[3],"cache_write":sums[4],"total":sums[0]+sums[1]+sums[3]+sums[4],"generated":sums[1]})
+        json!({"input":numeric_totals[0],"output":numeric_totals[1],"reasoning":numeric_totals[2],"cache_read":numeric_totals[3],"cache_write":numeric_totals[4],"total":numeric_total,"generated":numeric_totals[1]})
     };
     json!({"totals":totals,"accounting":{"state":state,"note":note,"counts":counts,"cycles_total":total,"cycles_with_usage":used},"cost":{"reported":reported,"known":reported.is_some(),"note":cost_note},"notes":notes})
 }

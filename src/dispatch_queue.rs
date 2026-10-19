@@ -362,6 +362,7 @@ pub fn validate_update(plan: &Value) -> Result<()> {
     let mut destinations = std::collections::HashSet::new();
     for e in files {
         let dest = string(e, "destination")?;
+        protect_running_executable(Path::new(dest))?;
         ensure!(destinations.insert(dest), "Duplicate update destination");
         ensure!(
             new["trusted_files"][dest] == e["sha256"]
@@ -415,6 +416,9 @@ pub fn validate_update(plan: &Value) -> Result<()> {
             );
         let binary = destination == resolve(&path(new, "controller")?)?
             && destination.parent() == resolve(&path(old, "controller")?)?.parent();
+        if binary {
+            runtime_mode(&path(e, "source")?, &path(e, "destination")?, true)?;
+        }
         let mut configuration = false;
         for g in list(old, "goals")? {
             let r = resolve(&root(g)?)?;
@@ -453,6 +457,12 @@ pub fn validate_update(plan: &Value) -> Result<()> {
     Ok(())
 }
 pub fn restore(queue: &Queue, journal: &Value) -> Result<()> {
+    // A legacy journal may name the executable of the process recovering it.
+    // Replacing even identical bytes by rename unlinks that process's inode.
+    // Refuse the entire restore before changing any destination or state.
+    for entry in list(journal, "backups")? {
+        protect_running_executable(&path(entry, "path")?)?;
+    }
     // Old Python journals omitted mode. Never declare recovery complete after
     // restoring an executable with an unknowable non-executable default mode.
     for entry in list(journal, "backups")? {
@@ -584,7 +594,17 @@ pub fn boundary_updates(
                     format!("{:x}", Sha256::digest(&bytes)) == string(e, "sha256")?,
                     "Staged bytes changed during promotion"
                 );
-                write_runtime_bytes(&path(e, "destination")?, &bytes, None)?
+                let destination = path(e, "destination")?;
+                protect_running_executable(&destination)?;
+                // A distinct versioned controller has no previous destination
+                // mode. Keep its staged executable bits instead of creating an
+                // unlaunchable 0600 artifact. Existing runtime modes win.
+                let mode = runtime_mode(
+                    &path(e, "source")?,
+                    &destination,
+                    resolve(&destination)? == resolve(&path(&plan["manifest"], "controller")?)?,
+                )?;
+                write_runtime_bytes(&destination, &bytes, Some(mode))?
             }
             pins(&plan["manifest"]["trusted_files"])?;
             save(manifest_path, &plan["manifest"])?;
@@ -866,6 +886,41 @@ pub fn retry_goals(queue: &Queue, m: &Value, s: &mut Value, state_path: &Path) -
 }
 
 /// Runtime promotion preserves existing mode bits, including executable binaries.
+fn protect_running_executable(path: &Path) -> Result<()> {
+    protect_executable(path, &std::env::current_exe()?)
+}
+
+fn runtime_mode(source: &Path, destination: &Path, controller: bool) -> Result<u32> {
+    let mode = match fs::metadata(destination) {
+        Ok(metadata) => metadata.mode(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => fs::metadata(source)?.mode(),
+        Err(error) => return Err(error.into()),
+    } & 0o777;
+    ensure!(
+        !controller || mode & 0o100 != 0,
+        "Boundary controller artifact must be owner-executable; preserve its approved executable mode"
+    );
+    Ok(mode)
+}
+
+fn protect_executable(path: &Path, executable: &Path) -> Result<()> {
+    let executable = resolve(executable)?;
+    ensure!(
+        resolve(path)? != executable,
+        "Boundary update cannot replace the running executable; stage a distinct versioned controller and use queue-handoff"
+    );
+    let owner = fs::metadata(&executable)?;
+    match fs::metadata(path) {
+        Ok(target) => ensure!(
+            (target.dev(), target.ino()) != (owner.dev(), owner.ino()),
+            "Boundary update destination aliases the running executable; stage a distinct versioned controller and use queue-handoff"
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
 fn write_runtime_bytes(path: &Path, bytes: &[u8], mode: Option<u32>) -> Result<()> {
     let mode = mode
         .or_else(|| fs::metadata(path).ok().map(|m| m.mode() & 0o777))
@@ -895,4 +950,55 @@ fn cleanup_backups(journal: &Value) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod executable_destination_tests {
+    use super::{protect_executable, runtime_mode};
+    use anyhow::Result;
+    use std::{fs, os::unix::fs::symlink};
+
+    #[test]
+    fn executable_identity_rejects_path_and_aliases_without_writes() -> Result<()> {
+        // Inert files model identity. Never replace or launch a live executable.
+        let tmp = tempfile::tempdir()?;
+        let owner = tmp.path().join("owner-v1");
+        let hardlink = tmp.path().join("hardlink");
+        let alias = tmp.path().join("alias");
+        let distinct = tmp.path().join("owner-v2");
+        fs::write(&owner, b"retained owner")?;
+        fs::hard_link(&owner, &hardlink)?;
+        symlink(&owner, &alias)?;
+        for target in [&owner, &hardlink, &alias] {
+            assert!(protect_executable(target, &owner).is_err());
+        }
+        protect_executable(&distinct, &owner)?;
+        fs::write(&distinct, b"retained owner")?;
+        protect_executable(&distinct, &owner)?;
+        assert_eq!(fs::read(owner)?, b"retained owner");
+        assert_eq!(fs::read(hardlink)?, b"retained owner");
+        Ok(())
+    }
+
+    #[test]
+    fn controller_mode_must_be_launchable_without_expanding_existing_permissions() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir()?;
+        let source = tmp.path().join("candidate");
+        let destination = tmp.path().join("controller-v2");
+        fs::write(&source, b"inert artifact")?;
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o640))?;
+        assert!(runtime_mode(&source, &destination, true).is_err());
+        assert_eq!(runtime_mode(&source, &destination, false)?, 0o640);
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o750))?;
+        assert_eq!(runtime_mode(&source, &destination, true)?, 0o750);
+        assert!(!destination.exists());
+        fs::write(&destination, b"previous artifact")?;
+        fs::set_permissions(&destination, fs::Permissions::from_mode(0o700))?;
+        assert_eq!(runtime_mode(&source, &destination, true)?, 0o700);
+        fs::set_permissions(&destination, fs::Permissions::from_mode(0o640))?;
+        assert!(runtime_mode(&source, &destination, true).is_err());
+        assert_eq!(fs::read(destination)?, b"previous artifact");
+        Ok(())
+    }
 }
