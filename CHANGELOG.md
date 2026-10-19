@@ -2,6 +2,8 @@
 
 ## 0.4.0
 
+- Add tag-triggered GitHub release publication gated by full verification and
+  successful main CI for the exact release commit.
 - Add a local, read-only dashboard with configured state roots, capture integrity
   checks, lifecycle summaries, and explicit unknown usage/time accounting.
 - Add durable goal intake, queue retry/update journals, audited owner handoff,

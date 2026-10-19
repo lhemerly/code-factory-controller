@@ -43,6 +43,13 @@ systemctl --user list-timers code-factory-update.timer
 
 Releases, rather than every push to `main`, are the update boundary. The installer requires an available user systemd manager when `--auto-update` is requested; timer failures are visible with `journalctl --user -u code-factory-update.service`.
 
+To publish a version, merge its version bump and changelog into `main`, then push
+the matching stable `vX.Y.Z` tag. The [release workflow](.github/workflows/release.yml)
+runs the full verification suite and requires successful `main` CI for that exact
+commit before publishing the GitHub release. Installed clients discover it through
+`code-factory update` or the daily update timer; merging source alone does not
+publish an update.
+
 ## Build and verify
 
 Install Rust 1.95.0 and Git on Linux:

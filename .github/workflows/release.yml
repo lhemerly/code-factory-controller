@@ -1,0 +1,84 @@
+name: Publish release
+on:
+  push:
+    tags: ["v*.*.*"]
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    outputs:
+      commit: ${{ steps.version.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate stable version and main history
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, re, subprocess, tomllib
+          tag = os.environ["RELEASE_TAG"]
+          if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
+              raise SystemExit("Only stable semantic-version tags can be released")
+          version = tomllib.loads(pathlib.Path("Cargo.toml").read_text())["package"]["version"]
+          if tag != "v" + version:
+              raise SystemExit("Release tag must match Cargo.toml")
+          subprocess.run(["git", "merge-base", "--is-ancestor", "HEAD", "origin/main"], check=True)
+          commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"commit={commit}\n")
+          PY
+  verify:
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+  publish:
+    needs: [validate, verify]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+      - name: Require successful main CI for the exact release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+        run: |
+          run_id=$(gh run list --workflow ci.yml --branch main --event push \
+            --commit "$RELEASE_COMMIT" --limit 1 --json databaseId \
+            --jq '.[0].databaseId // empty')
+          test -n "$run_id"
+          gh run watch "$run_id" --exit-status --interval 10
+          gh run view "$run_id" --json headSha,headBranch,event,conclusion,jobs \
+            > "$RUNNER_TEMP/release-main-ci.json"
+          python3 - <<'PY'
+          import json, os, pathlib
+          run = json.loads((pathlib.Path(os.environ["RUNNER_TEMP"]) / "release-main-ci.json").read_text())
+          if not (run["headSha"] == os.environ["RELEASE_COMMIT"]
+                  and run["headBranch"] == "main" and run["event"] == "push"
+                  and run["conclusion"] == "success"
+                  and any(job["name"] == "rust-and-contract" and job["conclusion"] == "success"
+                          for job in run["jobs"])):
+              raise SystemExit("Exact-commit main CI must pass before publication")
+          PY
+      - name: Publish the verified stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" --json url --jq .url; then
+            exit 0
+          fi
+          gh release create "$RELEASE_TAG" --verify-tag --latest \
+            --title "$RELEASE_TAG" --notes-file CHANGELOG.md
