@@ -169,3 +169,82 @@ fn refresh_preserves_selection_by_identity_and_missing_goal_is_not_completed() {
     assert!(app.goal.is_none());
     assert!(app.goal_error.is_some());
 }
+
+fn valid_state() -> SetupState {
+    let mut state = SetupState::new("controller.json".into());
+    state.draft.project_id = "example".into();
+    state.draft.repository = "/work/project".into();
+    state.draft.data_dir = "/work/data".into();
+    state.draft.delivery_dir = "/work/delivery".into();
+    state.draft.profiles[0].id = "checks".into();
+    state.draft.profiles[0].checks[0].id = "unit".into();
+    state.draft.profiles[0].checks[0].argv = "cargo test".into();
+    state
+}
+
+fn ctrl(c: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+}
+
+#[test]
+fn setup_empty_form_fails_validation_inline() {
+    let mut state = SetupState::new("controller.json".into());
+    assert!(!handle_setup_key(&mut state, ctrl('s')));
+    assert!(matches!(state.stage, SetupStage::Form));
+    assert!(state.draft.error.is_some());
+}
+
+#[test]
+fn setup_tab_cycles_and_ctrl_keys_mutate() {
+    let mut state = valid_state();
+    handle_setup_key(&mut state, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(state.draft.field, 1);
+    handle_setup_key(
+        &mut state,
+        KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE),
+    );
+    assert_eq!(state.draft.field, 0);
+    let before = state.draft.field_count();
+    handle_setup_key(&mut state, ctrl('n'));
+    assert_eq!(state.draft.field_count(), before + 2);
+    let before = state.draft.field_count();
+    handle_setup_key(&mut state, ctrl('p'));
+    assert_eq!(state.draft.field_count(), before + 5);
+    // field is on the new profile's id; typing appends there
+    handle_setup_key(
+        &mut state,
+        KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+    );
+    assert_eq!(state.draft.profiles[1].id, "x");
+}
+
+#[test]
+fn setup_review_then_save_writes_loadable_file() {
+    let mut state = valid_state();
+    assert!(!handle_setup_key(&mut state, ctrl('s')));
+    assert!(matches!(state.stage, SetupStage::Review { .. }));
+    let dir = tempfile::tempdir().unwrap();
+    state.output = dir.path().join("controller.json").display().to_string();
+    assert!(!handle_setup_key(&mut state, ctrl('s')));
+    assert!(matches!(state.stage, SetupStage::Saved { .. }));
+    let loaded = crate::model::Config::load(&dir.path().join("controller.json")).unwrap();
+    assert_eq!(loaded.project_id, "example");
+    assert_eq!(loaded.profiles[0].checks[0].argv, vec!["cargo", "test"]);
+}
+
+#[test]
+fn setup_esc_and_saved_quit() {
+    let mut state = valid_state();
+    assert!(handle_setup_key(
+        &mut state,
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+    ));
+    let mut state = valid_state();
+    state.stage = SetupStage::Saved {
+        path: "controller.json".into(),
+    };
+    assert!(handle_setup_key(
+        &mut state,
+        KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)
+    ));
+}

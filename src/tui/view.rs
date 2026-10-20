@@ -1,4 +1,4 @@
-use super::data::{App, Draft, FIELDS, Modal, safe_text};
+use super::data::{App, ConfigField, Draft, FIELDS, Modal, SetupStage, SetupState, safe_text};
 use crate::model::{Check, Receipt};
 use ratatui::{
     Frame,
@@ -887,6 +887,196 @@ fn modal_body(frame: &mut Frame, area: Rect, lines: Vec<Line<'static>>, scroll: 
     );
 }
 
+// --- Controller setup -------------------------------------------------------
+
+fn section_of(field: &ConfigField) -> String {
+    match field {
+        ConfigField::ProjectId
+        | ConfigField::Repository
+        | ConfigField::DataDir
+        | ConfigField::DeliveryDir
+        | ConfigField::IntegrationRef => "PROJECT".into(),
+        ConfigField::ProfileId(p)
+        | ConfigField::ProfileVersion(p)
+        | ConfigField::ProfileTimeout(p) => {
+            format!("PROFILE {}", p + 1)
+        }
+        ConfigField::CheckId(p, c) | ConfigField::CheckArgv(p, c) => {
+            format!("PROFILE {} · CHECK {}", p + 1, c + 1)
+        }
+        ConfigField::Models | ConfigField::Cooldown => {
+            "POLICY · locked free-only, zero-spend, data-approved".into()
+        }
+        ConfigField::MaxWorkers
+        | ConfigField::LeaseSeconds
+        | ConfigField::MaxAttempts
+        | ConfigField::OpencodeUrl => "LIMITS".into(),
+    }
+}
+
+pub fn draw_setup(frame: &mut Frame, state: &mut SetupState) {
+    match &state.stage {
+        SetupStage::Form => draw_setup_form(frame, state),
+        SetupStage::Review { .. } => draw_setup_review(frame, state),
+        SetupStage::Saved { .. } => draw_setup_saved(frame, state),
+    }
+}
+
+fn draw_setup_form(frame: &mut Frame, state: &mut SetupState) {
+    let area = frame.area();
+    frame.render_widget(
+        Block::default().style(Style::default().bg(BACKGROUND).fg(TEXT)),
+        area,
+    );
+    if area.width < 40 || area.height < 12 {
+        frame.render_widget(
+            Paragraph::new(vec![
+                heading("CONTROLLER SETUP"),
+                line("Resize to at least 40 × 12"),
+                line("Esc  Quit"),
+            ])
+            .style(Style::default().fg(TEXT).bg(BACKGROUND)),
+            area,
+        );
+        return;
+    }
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Min(6),
+            Constraint::Length(4),
+        ])
+        .split(area);
+    frame.render_widget(
+        Paragraph::new(vec![
+            heading("CONTROLLER SETUP"),
+            pair("Saving to", &state.output),
+            line(
+                "Paths must be absolute. Policy is locked to free-only, zero-spend, data-approved.",
+            ),
+        ]),
+        rows[0],
+    );
+    let draft = &state.draft;
+    let fields = draft.fields();
+    let mut lines: Vec<Line> = vec![];
+    let mut active_line = 0usize;
+    let mut last_section: Option<String> = None;
+    for (index, field) in fields.iter().enumerate() {
+        let section = section_of(field);
+        if last_section.as_deref() != Some(section.as_str()) {
+            lines.push(line(""));
+            lines.push(heading(&section));
+            last_section = Some(section);
+        }
+        let value = draft.field_value(field);
+        let is_active = index == draft.field;
+        if is_active {
+            active_line = lines.len();
+        }
+        let label = colored(format!("  {}  ", field.label()), MUTED);
+        let value_span = if is_active {
+            colored(format!("{}▏", value), ACCENT)
+        } else {
+            colored(value, TEXT)
+        };
+        let row = Line::from(vec![label, value_span]);
+        lines.push(if is_active {
+            row.style(Style::default().bg(SELECTED))
+        } else {
+            row
+        });
+    }
+    // Keep the active field visible.
+    let inner_height = rows[1].height.saturating_sub(2) as usize;
+    if active_line < state.scroll as usize {
+        state.scroll = active_line as u16;
+    } else if inner_height > 0 && active_line >= state.scroll as usize + inner_height {
+        state.scroll = (active_line - inner_height + 1) as u16;
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(panel("CONFIGURATION"))
+            .wrap(Wrap { trim: false })
+            .scroll((state.scroll, 0)),
+        rows[1],
+    );
+    let error = state.draft.error.as_deref().unwrap_or(
+        "Tab  Next field     Ctrl+S  Review     Ctrl+N  New check     Ctrl+P  New profile     Ctrl+D  Delete     Esc  Quit",
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(colored(
+            error,
+            if state.draft.error.is_some() {
+                RED
+            } else {
+                ACCENT
+            },
+        ))),
+        rows[2],
+    );
+}
+
+fn draw_setup_review(frame: &mut Frame, state: &mut SetupState) {
+    let SetupStage::Review { config, error } = &state.stage else {
+        return;
+    };
+    let area = frame.area();
+    frame.render_widget(
+        Block::default().style(Style::default().bg(BACKGROUND).fg(TEXT)),
+        area,
+    );
+    let json = serde_json::to_string_pretty(config).unwrap_or_default();
+    let mut lines = vec![
+        heading("REVIEW CONTROLLER CONFIG"),
+        line("This is the exact JSON that will be written."),
+        line(""),
+    ];
+    lines.extend(json.lines().map(line));
+    lines.push(line(""));
+    if let Some(error) = error {
+        lines.push(Line::from(colored(error, RED)));
+        lines.push(line(""));
+    }
+    lines.push(Line::from(colored(
+        "Ctrl+S  Save to file     Esc  Back",
+        ACCENT,
+    )));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(panel("CONFIGURATION"))
+            .wrap(Wrap { trim: false })
+            .scroll((state.scroll, 0)),
+        area,
+    );
+}
+
+fn draw_setup_saved(frame: &mut Frame, state: &mut SetupState) {
+    let SetupStage::Saved { path } = &state.stage else {
+        return;
+    };
+    let area = frame.area();
+    frame.render_widget(
+        Block::default().style(Style::default().bg(BACKGROUND).fg(TEXT)),
+        area,
+    );
+    let lines = vec![
+        heading("CONFIG SAVED"),
+        line(""),
+        pair("Path", path),
+        line(""),
+        line("Start the controller:"),
+        line(format!(
+            "  code-factory-controller serve --config {} --listen 127.0.0.1:4317",
+            path
+        )),
+        line(""),
+        Line::from(colored("Press q to quit", ACCENT)),
+    ];
+    frame.render_widget(Paragraph::new(lines).block(panel("DONE")), area);
+}
+
 fn draft_modal(frame: &mut Frame, area: Rect, app: &App, draft: &Draft) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -1178,5 +1368,84 @@ mod tests {
         let screen = render(&app, 120, 40);
         assert!(screen.contains("admit: Controller request interrupted."));
         assert!(screen.contains("REVIEW · approved job contract"));
+    }
+
+    #[test]
+    fn setup_screens_render_at_tiny_and_normal_sizes() {
+        use crate::model::ModelPolicy;
+        use std::path::PathBuf;
+        let config = crate::model::Config {
+            project_id: "demo".into(),
+            repository: PathBuf::from("/work/project"),
+            data_dir: PathBuf::from("/work/data"),
+            delivery_dir: PathBuf::from("/work/delivery"),
+            integration_ref: "refs/heads/factory-integration".into(),
+            profiles: vec![Profile {
+                id: "test".into(),
+                version: "1".into(),
+                checks: vec![Check {
+                    id: "unit".into(),
+                    argv: vec!["cargo".into(), "test".into()],
+                    result_contract: None,
+                }],
+                timeout_seconds: 60,
+            }],
+            policy: ModelPolicy {
+                models: vec!["opencode/big-pickle".into()],
+                free_only: true,
+                spend_ceiling: 0.0,
+                data_approved: true,
+                cooldown_seconds: 60,
+            },
+            max_workers: 2,
+            lease_seconds: 1800,
+            max_attempts: 3,
+            opencode_url: Some("http://127.0.0.1:4096".into()),
+            verifier_executable: None,
+            llama_cpp: None,
+            agy: None,
+        };
+        for stage in 0..3 {
+            let mut state = SetupState::new("controller.json".into());
+            state.stage = match stage {
+                1 => SetupStage::Review {
+                    config: Box::new(config.clone()),
+                    error: None,
+                },
+                2 => SetupStage::Saved {
+                    path: "controller.json".into(),
+                },
+                _ => SetupStage::Form,
+            };
+            for (width, height) in [(1, 1), (30, 8), (58, 17), (80, 24), (120, 40)] {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal
+                    .draw(|frame| draw_setup(frame, &mut state))
+                    .unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn setup_form_shows_sections_and_active_field() {
+        let mut state = SetupState::new("controller.json".into());
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal
+            .draw(|frame| draw_setup(frame, &mut state))
+            .unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(120)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(screen.contains("CONTROLLER SETUP"));
+        assert!(screen.contains("PROJECT"));
+        assert!(screen.contains("PROFILE 1"));
+        assert!(screen.contains("POLICY"));
+        assert!(screen.contains("LIMITS"));
+        assert!(screen.contains("controller.json"));
     }
 }

@@ -7,7 +7,10 @@ use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
 };
-use data::{App, Draft, JobEvent, Modal, Overview, safe_text, validate_input};
+use data::{
+    App, Draft, JobEvent, Modal, Overview, SetupStage, SetupState, safe_text, save_config,
+    validate_input,
+};
 use ratatui::{Terminal, backend::TestBackend};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -271,6 +274,97 @@ pub async fn run(
         tokio::task::yield_now().await;
     }
     Ok(())
+}
+
+/// Guided, controller-less creation of a project config file.
+pub fn run_setup(output: PathBuf) -> Result<()> {
+    let mut state = SetupState::new(output.display().to_string());
+    let mut terminal = ratatui::try_init()?;
+    let _restore = RestoreTerminal;
+    loop {
+        terminal.draw(|frame| view::draw_setup(frame, &mut state))?;
+        if event::poll(Duration::from_millis(80))?
+            && let Event::Key(key) = event::read()?
+            && handle_setup_key(&mut state, key)
+        {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn handle_setup_key(state: &mut SetupState, key: KeyEvent) -> bool {
+    if key.kind != KeyEventKind::Press {
+        return false;
+    }
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    match &mut state.stage {
+        SetupStage::Form => match key.code {
+            KeyCode::Esc => return true,
+            KeyCode::Tab => {
+                let n = state.draft.field_count();
+                state.draft.field = (state.draft.field + 1) % n;
+            }
+            KeyCode::BackTab => {
+                let n = state.draft.field_count();
+                state.draft.field = (state.draft.field + n - 1) % n;
+            }
+            KeyCode::Char('u') if ctrl => {
+                if let Some(field) = state.draft.current_field() {
+                    state.draft.set_field(&field, "");
+                }
+            }
+            KeyCode::Char('n') if ctrl => state.draft.add_check(),
+            KeyCode::Char('p') if ctrl => state.draft.add_profile(),
+            KeyCode::Char('d') if ctrl => state.draft.delete_current(),
+            KeyCode::Char('s') if ctrl => match state.draft.build() {
+                Ok(config) => {
+                    state.stage = SetupStage::Review {
+                        config: Box::new(config),
+                        error: None,
+                    };
+                    state.scroll = 0;
+                }
+                Err(error) => state.draft.error = Some(error.to_string()),
+            },
+            KeyCode::Backspace => {
+                if let Some(field) = state.draft.current_field() {
+                    let mut value = state.draft.field_value(&field);
+                    value.pop();
+                    state.draft.set_field(&field, &value);
+                }
+            }
+            KeyCode::Char(c) if !ctrl && !alt => {
+                if let Some(field) = state.draft.current_field() {
+                    let mut value = state.draft.field_value(&field);
+                    value.push(c);
+                    state.draft.set_field(&field, &value);
+                }
+            }
+            _ => {}
+        },
+        SetupStage::Review { config, error } => match key.code {
+            KeyCode::Esc => state.stage = SetupStage::Form,
+            KeyCode::PageDown => state.scroll = state.scroll.saturating_add(8),
+            KeyCode::PageUp => state.scroll = state.scroll.saturating_sub(8),
+            KeyCode::Char('s') if ctrl => match save_config(config, Path::new(&state.output)) {
+                Ok(()) => {
+                    state.stage = SetupStage::Saved {
+                        path: state.output.clone(),
+                    };
+                    state.scroll = 0;
+                }
+                Err(e) => *error = Some(e.to_string()),
+            },
+            _ => {}
+        },
+        SetupStage::Saved { .. } => match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => return true,
+            _ => {}
+        },
+    }
+    false
 }
 
 struct RestoreTerminal;

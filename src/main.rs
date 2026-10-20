@@ -43,6 +43,11 @@ enum Command {
         #[arg(long)]
         goal: PathBuf,
     },
+    /// Guided, controller-less creation of a project config file.
+    Setup {
+        #[arg(long, default_value = "controller.json")]
+        output: PathBuf,
+    },
     /// Submit approved work and watch jobs, verification and delivery.
     Tui {
         #[arg(long, default_value = "http://127.0.0.1:4317")]
@@ -233,6 +238,9 @@ async fn run(cli: Cli) -> Result<()> {
                 "{}",
                 code_factory_controller::goal_state::raw_json_pretty(&raw)
             );
+        }
+        Command::Setup { output } => {
+            code_factory_controller::tui::run_setup(output)?;
         }
         Command::Tui {
             url,
