@@ -1,267 +1,301 @@
 # Code Factory Controller
 
-A standalone Rust controller for code factories. It turns an approved Git change into an independently verified candidate, a verified integration commit, and a checked local delivery artifact. Coding workers run through OpenCode, native local llama.cpp, or the explicit agy connector; the controller owns durable state and acceptance.
+A durable, standalone Rust controller for autonomous code factories. It manages the full lifecycle of turning approved programming tasks into independently verified Git changes, verified integration commits, and checked local delivery artifacts.
 
-The first release targets **Linux**, **SQLite**, **OpenCode 1.19.0**, and **protocol 0.1**. It supports one configured project, up to two coding workers, one verifier at a time, one integration owner, and delivery as an immutable Git archive. It can operate with or without the [OpenCode Factory Plugin](https://github.com/lhemerly/opencode-factory-plugin).
+Coding workers execute in isolated Git worktrees via [OpenCode](https://github.com/anomaly/opencode), a native local [llama.cpp](docs/native-llama-cpp.md) endpoint, or the [agy connector](docs/agy-connector.md). The controller independently verifies candidate code in fresh checkouts, coordinates compare-and-swap integration, and produces immutable delivery archives.
 
-An explicit [OpenCode V2 external-execution mode](docs/opencode-v2-authority.md) supports the project-local pstack adapter on **OpenCode 2.0.29**. OpenCode owns coding execution; this controller keeps evidence, policy, attempt limits and recovery authority. Host-observed `bind-v2` reuses the worker protocol and independent verifier without adding V2 prompt dispatch or a competing scheduler. It requires a separate approved dedicated runtime/configuration and is not enabled by default.
+---
 
-An opt-in [native agy connector](docs/agy-connector.md) supports pinned pstack workflows on agy 1.3.6 with separate process proof and raw token accounting. It is offline-qualified; live Argon execution, workspace trust and billing are not qualified. See [the isolated configuration example](examples/controller.agy.json).
+## Key Guarantees and Architecture
 
-## What is implemented
+```mermaid
+flowchart LR
+    A["Operator / Backlog"] -->|"Admit Job"| B["Controller Engine"]
+    B -->|"Prepare Worktree"| C["Worker Session\n(OpenCode / llama.cpp / agy)"]
+    C -->|"Propose Candidate"| B
+    B -->|"Clean Checkout & Test"| D["Independent Verifier\n(Subreaper / pidfd)"]
+    D -->|"Passed Receipt"| B
+    B -->|"Compare-and-Swap"| E["Integration Ref"]
+    E -->|"Re-Verify"| D
+    B -->|"Package Archive"| F["Delivery Directory\n(.tar + SHA-256)"]
+```
 
-- Transactional jobs, historical attempts, leases, state transitions, receipts and request identities
-- Job/session-scoped worker capabilities and a separate operator API
-- Host-created worktrees and an OpenCode HTTP adapter with start, inspect, prompt, abort and reconciliation
-- SSE observations as reconciliation hints; session idle and model “done” messages never accept a job
-- Trusted verification profiles executed in separate clean checkouts, with command results, feature-to-check evidence and log digests
-- Scope and protected-path checks, exact candidate/evidence matching, and stale-attempt fencing
-- Serialized integration with compare-and-swap Git ref updates and fresh integrated-commit verification
-- Persisted delivery intent, checked archive creation, restart reconciliation and artifact auditing
-- Approved free-model selection, helper-model checks, durable provider cooldowns and zero paid fallback
-- Interactive terminal workspace for creating jobs, reviewing scope, watching activity and inspecting verification logs
+- **Independent Verification**: Coding workers and LLMs never self-certify. Model completion messages and terminal idle states are treated as hints, not acceptance. All verification commands run in clean checkouts under Linux process supervision (`pidfd` and subreaper).
+- **Durable State Machine**: Jobs, attempts, leases, state transitions, receipts, and request identities are transactionally persisted in SQLite. The controller recovers cleanly from interruptions without duplicate execution or orphaned leases.
+- **Strict Scope Boundaries**: Worker file access is bounded by explicit `allowed_paths` and `protected_paths`. Attempting to modify forbidden files or escape the worktree halts the attempt.
+- **Zero Paid Fallback**: Enforces strict allowlists for free/local models, zero spend ceilings, and durable provider cooldowns. If an eligible model is unavailable, execution pauses rather than substituting a paid API.
+- **Immutable Delivery**: Accepted changes produce an immutable Git archive (`.tar`) with a verified SHA-256 digest in the configured delivery directory. Optional adapters can update bound GitHub pull requests without merging or deploying.
 
-This is a local service for trusted workloads. Git worktrees and environment filtering do not isolate arbitrary processes. Deploy untrusted worker or verifier code in an appropriate container or VM with filesystem, network, credential and resource boundaries. The service does not install or configure that environment for you.
+---
 
-## Install and automatically update the CLI
+## Installation and Build
 
-On Linux with Python 3, Git and Rust available, clone this repository and run:
+### Prerequisites
+
+- **Linux** (x86_64 or aarch64) with kernel support for `pidfd` and subreaper process trees
+- **Rust 1.95+** and `cargo`
+- **Git**
+- **Python 3** (for the CLI wrapper, goal orchestration, and dashboard)
+
+### Automatic CLI Installation
+
+To install `code-factory` and `code-factory-controller` into `~/.local/bin` with optional daily update checks via systemd:
 
 ```sh
 python3 scripts/code-factory.py install --auto-update
 ```
 
-This installs `~/.local/bin/code-factory` and `code-factory-controller`. Ensure `~/.local/bin` is on PATH. `code-factory run` launches the durable backlog runner; `serve`, `operator`, `tui` and `schemas` forward to the Rust controller.
-
-The user systemd timer checks the latest stable GitHub release daily. Updates build the tagged source with locked dependencies, run runner regression checks, and switch the active version only after success. Failed updates retain the installed version. Existing running controllers continue using their current executable; an update never restarts an active job or changes its configuration/database. Rust build dependencies and network access are required for updates.
+Ensure `~/.local/bin` is in your `PATH`. Verify the installation:
 
 ```sh
 code-factory --version
-code-factory update
-systemctl --user list-timers code-factory-update.timer
 ```
 
-Releases, rather than every push to `main`, are the update boundary. The installer requires an available user systemd manager when `--auto-update` is requested; timer failures are visible with `journalctl --user -u code-factory-update.service`.
+### Manual Build
 
-To publish a version, merge its version bump and changelog into `main`, then push
-the matching stable `vX.Y.Z` tag. The [release workflow](.github/workflows/release.yml)
-runs the full verification suite and requires successful `main` CI for that exact
-commit before publishing the GitHub release. Installed clients discover it through
-`code-factory update` or the daily update timer; merging source alone does not
-publish an update.
-
-## Build and verify
-
-Install Rust 1.95.0 and Git on Linux:
+Build the controller binary directly using Cargo:
 
 ```sh
 cargo build --locked --release
+```
+
+The resulting binary is located at `target/release/code-factory-controller`.
+
+### Running Tests
+
+Run the full Rust verification and test suite:
+
+```sh
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 ```
 
-The binary is `target/release/code-factory-controller`. JSON Schemas are included under `schemas/`; regenerate them with:
+---
 
-```sh
-cargo run --locked -- schemas --output schemas
-```
+## Quickstart
 
-Consumer contract schemas are pinned under `contracts/plugin-0.1/`. The provider performs additional runtime checks for identities, authorization, scope, feature coverage, leases and receipt integrity.
+### 1. Configure the Controller
 
-## Configure the first project
-
-Copy [the controller configuration](examples/controller.json) and replace its absolute repository, data and delivery paths. The data and delivery directories must be outside the worker repository. Select trusted profile commands, an explicitly approved free-model allowlist, a zero spend ceiling, and a data-handling approval. The service refuses remote listening, incompatible runtime versions, paid policy and silent changes to the configuration of an existing database.
-
-The first delivery target is the configured local `delivery_dir`. Each accepted job produces a `.tar` Git archive with its exact commit and SHA-256 digest. The core does not open PRs or push to remotes. The opt-in [GitHub review/delivery adapter](docs/github-review-delivery.md) updates an explicitly bound existing private PR after independent verification; it never merges or deploys.
-
-Start a dedicated OpenCode server using [the trusted runtime configuration](examples/opencode.json). Its `small_model` must also be explicitly approved and free. Keep the controller's operator credential out of the worker server environment.
-
-```sh
-OPENCODE_CONFIG=/absolute/path/opencode.json opencode serve --hostname 127.0.0.1 --port 4096
-```
-
-Create a private operator capability and start the controller in a separate terminal:
-
-```sh
-export FACTORY_OPERATOR_TOKEN="$(openssl rand -hex 32)"
-./target/release/code-factory-controller serve --config /absolute/path/controller.json
-```
-
-The token is read from the host environment, never a model-visible tool argument. The operator listener defaults to `127.0.0.1:4317`. Preserve the same token in the operator CLI's environment through your host's secret handling. `FACTORY_OPENCODE_PASSWORD` optionally supplies the dedicated OpenCode server's Basic Auth password; the username is `opencode`.
-
-## Native local llama.cpp connector
-
-Code Factory can execute approved jobs directly against an existing local
-llama.cpp OpenAI-compatible endpoint, without OpenCode or its plugin. The native
-adapter runs a bounded coding tool loop in the assigned worktree; model proposals
-never bypass independent verification, integration or checked delivery.
-
-Use the [native connector guide](docs/native-llama-cpp.md) and
-[Bonsai configuration](examples/controller.llama-cpp.bonsai.json). Core model
-identities and limits are configurable; this example selects the user's existing
-Bonsai Heretic v2 27B PTQ1_0 on Prism Vulkan. It adds no process installation,
-model download, credentials or remote fallback.
-
-The earlier [OpenCode provider profiles](docs/local-bonsai.md) remain an optional,
-separate deployment path. They are not the native connector.
-
-## Admit and run approved work
-
-With the controller running, open its terminal interface in another terminal using the same `FACTORY_OPERATOR_TOKEN`:
-
-```sh
-code-factory tui
-# Optional: also display the durable backlog runner's local goal state.
-code-factory tui --goal-state /absolute/path/goal-state.json
-# Explore the interface without a controller or credentials.
-code-factory tui --demo
-```
-
-Press **n** to enter a job name, task, required behavior, expected result, allowed/protected paths, base commit and policy version. Use Tab to move between fields; choose a registered verification profile with Left/Right. The base defaults to the repository's current HEAD: change it to the intended integration commit when building on previous deliveries. The form maps its behavior to every check in that profile. Use **i** to import a complete job JSON file when you need multiple criteria or different check mappings.
-
-Press **Ctrl+S** to review the full job and its trusted check commands, then **y** to admit it to the queue. Select it and press **r**, then **y**, to start execution. Admission and execution are separate actions. The TUI uses adapter mode; plugin-assisted dispatch remains available through `operator run`.
-
-| Key | Action |
-| --- | --- |
-| ↑ / ↓ or k / j | Select a job |
-| Tab or 1 / 2 / 3 | Overview, evidence, activity |
-| PgUp / PgDn | Scroll details, review or logs |
-| n / i | Create a job / import a job file |
-| r / p | Run / pause or resume |
-| a / c / x | Abort worker / cancel job / requeue |
-| [ / ] then l | Select and open a verification log |
-| ? / Esc | Help / close or go back |
-| q or Ctrl+C | Close the view; controller jobs continue |
-
-State refreshes every two seconds. A stale or failed connection disables writes; pending requests cannot be submitted twice. If an action's response is interrupted, inspect the refreshed durable state before retrying. Activity displays controller transitions, while verification logs are loaded only from receipt-owned artifacts after digest validation. The view never interprets model messages as acceptance. A delivered job and the optional broad-goal snapshot have separate status displays; the snapshot is a local runner record, not a fresh execution of its acceptance checks.
-
-The interface works best at 100×30 or larger and supports terminals down to 58×17. Draft fields support typing, backspace, Ctrl+U to clear a field, and pasted text; Enter inserts a line in the task brief. `code-factory tui --demo --snapshot` prints a fixed-size text preview. The TUI does not start services or create verification commands; configure the trusted profile and services first as described above.
-
-Copy [the job example](examples/job.json), set the full base commit, describe the bounded behavior, declare allowed and protected paths, and map every acceptance criterion to registered check IDs. The chosen profile is snapshotted into the approved job. A coding worker cannot replace its commands or weaken its acceptance criteria.
-
-```sh
-./target/release/code-factory-controller operator admit --input /absolute/path/job.json
-./target/release/code-factory-controller operator run --job approved-change
-./target/release/code-factory-controller operator status --job approved-change
-```
-
-`run` starts or reconciles the existing adapter attempt. The controller creates its worktree and session, sends the approved brief, inspects the session and Git HEAD, independently verifies a candidate, integrates it, verifies the integrated result and checks the delivered archive. The session's text is feedback, not acceptance evidence.
-
-The operator CLI also supports `list`, `prepare`, `bind`, `heartbeat`, `advance`, `pause`, `resume`, `cancel`, `abort` and `requeue`. Supply operation-specific JSON with `--input`; use `--url` for another loopback port. `abort` resolves and fences the previous worker. In V2 mode it fences the job and expires its lease before native interruption, then records execution stop separately from accounting; a confirmed stop with unknown/violating usage stays blocked and cannot requeue. See `status.execution_recovery` and the [V2 recovery contract](docs/opencode-v2-authority.md). `requeue` refuses unresolved sessions, integration plans and exhausted attempt budgets. Paused or cancelled jobs stop controller dispatch and handoffs; the operator chooses when to abort an active coding session.
-
-The read operations `overview`, `events` and `log` supply the terminal interface. They require the operator capability. `overview` re-audits completed deliveries; `events` accepts `after_seq`, optional `job_id`, and a limit up to 200; `log` accepts `job_id` and `artifact_reference` and returns a digest-checked tail of at most 32 KiB.
-
-Unknown session-creation or prompt-dispatch outcomes are fenced as blocked rather than blindly repeated. Inspect the dedicated OpenCode session, then resolve or abort it before requeueing. Provider errors retain their class and cooldown. Free-only work waits when no eligible model exists; no paid model is substituted. [Recovery and authority details](docs/architecture.md) explain these boundaries.
-
-## Plugin-assisted sessions
-
-The worker API implements all four protocol 0.1 tools. For manual sessions, `prepare` creates a controller-owned worktree; `bind` attaches a host-selected session and private worker capability to that attempt. Configure the plugin with this project, controller endpoint and worker token, and load it in the assigned worktree.
-
-For controller-dispatched plugin sessions, set `FACTORY_WORKER_TOKEN` in the controller's environment and the same value as `FACTORY_TOKEN` in the dedicated OpenCode server's environment. Set `FACTORY_ENABLED=1`, `FACTORY_PROJECT_ID`, `FACTORY_CONTROLLER_URL`, and load the plugin's built file in the server's trusted configuration. Then call `operator run` with an input file containing:
-
-```json
-{ "job_id": "approved-change", "mode": "plugin" }
-```
-
-Worker capabilities stay bound to one job and session. Use a fresh host capability and dedicated server environment for another plugin job or reassigned attempt. The first release's automatic provider retry path is intended for adapter mode; plugin retry requires host capability rotation. Two-worker acceptance tests use adapter/manual bindings, not a shared plugin credential.
-
-Plugin candidate submission returns `accepted_for_integration`; only the controller can transition to `done` after integrated verification and actual artifact delivery.
-
-## Require measured test evidence
-
-Legacy profile checks use their exit status. For checks that must prove tests actually ran, add an optional result contract to the host-approved check:
+Create a project configuration file (see [examples/controller.json](examples/controller.json)). Specify your Git repository, an isolated state directory, a delivery directory, approved models, and trusted verification profiles:
 
 ```json
 {
-  "id": "runtime",
-  "argv": ["python3", "/opt/code-factory/checks/runtime.py"],
-  "result_contract": { "evidence_type": "runtime_tests" }
+  "project_id": "my-project",
+  "repository": "/absolute/path/to/my-repo",
+  "data_dir": "/absolute/path/to/controller-data",
+  "delivery_dir": "/absolute/path/to/deliveries",
+  "integration_ref": "refs/heads/factory-integration",
+  "profiles": [
+    {
+      "id": "standard-tests",
+      "version": "1",
+      "timeout_seconds": 300,
+      "checks": [
+        {
+          "id": "unit-tests",
+          "argv": ["cargo", "test", "--locked"]
+        }
+      ]
+    }
+  ],
+  "policy": {
+    "models": ["opencode/free-model"],
+    "free_only": true,
+    "spend_ceiling": 0.0,
+    "data_approved": true,
+    "cooldown_seconds": 30
+  },
+  "max_workers": 2,
+  "lease_seconds": 3600,
+  "max_attempts": 3
 }
 ```
 
-The verifier must execute the real tests and print one JSON object to stdout, with diagnostics on stderr:
+> [!IMPORTANT]
+> The `data_dir` and `delivery_dir` directories must reside outside the worker repository to prevent workers from tampering with controller state or artifacts.
 
-```json
-{"commit":"<FACTORY_VERIFICATION_COMMIT>","evidence_type":"runtime_tests","passed":true,"skipped":false,"executed":12,"failed":0}
-```
+### 2. Start the Controller Service
 
-`FACTORY_VERIFICATION_COMMIT` is supplied by the controller. The reported commit must match it exactly; `executed` must be a positive integer and `failed` must equal zero. Explicit `skipped:false` or integer `skipped_count:0` is required, with no contradictory skip fields. Missing, malformed, oversized, skipped or zero-test results fail verification even when the command exits zero. The controller preserves the actual exit status, observations and evidence error in its receipt, reruns the same contract against the integrated commit, and includes failures in rework feedback.
-
-The host-owned verifier is responsible for measuring the required behavior. Protect repository-owned verifier paths from worker edits, or keep the verifier outside the worker repository. Application-specific hardware/device evidence belongs in that verifier. Adding a result contract changes the approved configuration: use a new reviewed configuration/data directory rather than modifying an existing database's policy. The TUI identifies checks with a contract and labels existing checks **Exit status only**.
-
-## Sustained implementation backlogs
-
-A staged [Rust migration](docs/rust-migration.md) adds `code-factory-controller run`
-with the same backlog options and Python-compatible state/receipts. The Rust path
-uses supervised whole-goal acceptance and audits saved completion on restart.
-Queue dispatch, recovery, publication, installation and the dashboard still use
-Python; the system-wide migration and live essentials checkpoint remain open.
-
-
-The Linux host runner in `scripts/goal-runner.py` executes an approved sequence of jobs in adapter mode. Each job starts from the previous independently verified integration commit. The runner persists admission intent before contacting the controller, reconciles existing job identities on restart, retains exact integrated receipts and deliveries, and bounds verification rework. It respects controller provider cooldowns and stops on paused, blocked or ambiguous effects.
+Generate an operator token and launch the service:
 
 ```sh
-python3 scripts/goal-runner.py --manifest /absolute/path/goal.json \
-  --state /absolute/path/goal-state.json --max-seconds 86400
+export FACTORY_OPERATOR_TOKEN="$(openssl rand -hex 32)"
+code-factory-controller serve --config /path/to/controller.json --listen 127.0.0.1:4317
 ```
 
-Keep the operator capability in the host environment and both services running. Interrupting or exhausting the host runner's time budget retains the active job; invoke it again with the same manifest/state to resume. One runner owns each state file through a Linux file lock. Jobs already listed in the manifest are immutable; append new approved tasks to extend a backlog.
+Keep `FACTORY_OPERATOR_TOKEN` in the environment of any operator CLI or TUI session. The operator listener binds strictly to loopback (`127.0.0.1`).
 
-A manifest contains `goal_id`, the initial `base_commit`, a `tasks` array of approved job inputs (without `base_commit`, which is assigned when each task starts), optional `max_reworks` (default 1), and `remaining_work`. Every task still requires trusted registered verification checks and approved path boundaries. This runner consumes a host-approved backlog; it does not automatically invent or approve arbitrary verification commands.
+---
 
-Verification rework preserves the failed candidate in the next attempt's worktree and supplies bounded, digest-checked failure diagnostics. The original approved base and acceptance policy remain fixed. This lets a repair continue existing implementation progress across controller restarts.
+## Interacting with the Controller
 
-The state distinguishes completed jobs from the broad goal. Exhausting tasks with unresolved `remaining_work` yields `awaiting_plan` (exit 2), not completion. `needs_attention` also exits 2; run-budget exhaustion exits 75. `completed`/exit 0 additionally requires a mandatory final acceptance suite to pass in a fresh checkout of the exact final integrated commit. Empty or missing acceptance suites yield `awaiting_acceptance`; nonzero exits, skipped checks, missing evidence and failed execution yield `acceptance_failed`. Both exit 2. That result is bounded by the approved checks; it does not prove unspecified requirements.
+### Terminal UI (TUI)
 
-## Mandatory final goal acceptance
+Launch the interactive terminal interface to admit work, monitor live activity, and inspect verification logs:
 
-The goal manifest must declare an absolute `repository`, nonempty `required_evidence`, and nonempty `completion_checks`. Each host-approved check has `id`, `evidence_type`, `argv`, and optional `timeout_seconds` (1–3600). All required evidence types must be covered. Every command runs without controller credentials in a fresh checkout of the exact final integration commit. Logs and command receipts remain beside the goal state. Commands must exit zero and emit a single JSON object on stdout:
+```sh
+code-factory tui --url http://127.0.0.1:4317
+```
+
+You can also preview the interface in demo mode without a running controller:
+
+```sh
+code-factory tui --demo
+```
+
+#### TUI Keyboard Shortcuts
+
+| Key | Action |
+| --- | --- |
+| `↑` / `↓` or `k` / `j` | Navigate job list |
+| `Tab` or `1` / `2` / `3` | Switch tabs: Overview, Evidence, Activity |
+| `PgUp` / `PgDn` | Scroll details, reviews, or logs |
+| `n` | Create a new job draft interactively |
+| `i` | Import job definition from a JSON file |
+| `Ctrl+S` then `y` | Review and admit job draft to queue |
+| `r` then `y` | Run selected job |
+| `p` | Pause or resume selected job |
+| `a` / `c` / `x` | Abort worker / Cancel job / Requeue |
+| `[` / `]` then `l` | Select and inspect verification log |
+| `?` / `Esc` | Help / Close overlay / Back |
+| `q` or `Ctrl+C` | Exit TUI (running controller jobs continue) |
+
+### Operator CLI
+
+The operator CLI enables scripted and headless control of the controller:
+
+```sh
+# Admit a job definition
+code-factory-controller operator admit --input /path/to/job.json
+
+# Start or reconcile execution
+code-factory-controller operator run --job my-job-id
+
+# Inspect job state and receipts
+code-factory-controller operator status --job my-job-id
+
+# Pause, resume, abort, or requeue
+code-factory-controller operator pause --job my-job-id
+code-factory-controller operator resume --job my-job-id
+code-factory-controller operator abort --job my-job-id
+code-factory-controller operator requeue --job my-job-id
+```
+
+Additional operator operations include `list`, `prepare`, `bind`, `heartbeat`, `overview`, `events`, and `log`.
+
+---
+
+## Worker Backends and Connectors
+
+Code Factory supports three distinct worker execution models:
+
+### 1. OpenCode Adapter & Plugin
+
+Connects to an external [OpenCode](https://github.com/anomaly/opencode) instance. In adapter mode, the controller communicates directly with OpenCode's HTTP API (`opencode serve`). In plugin mode, the worker interacts using the [Protocol 0.1](docs/protocol.md) tools (`factory_status`, `factory_next_task`, `factory_request_verification`, `factory_submit_candidate`).
+
+```sh
+OPENCODE_CONFIG=/path/to/opencode.json opencode serve --hostname 127.0.0.1 --port 4096
+```
+
+See [examples/opencode.json](examples/opencode.json) and [OpenCode V2 Authority](docs/opencode-v2-authority.md) for external execution details.
+
+### 2. Native Local llama.cpp Connector
+
+Runs an in-process, bounded tool loop directly against a local llama.cpp OpenAI-compatible endpoint without requiring OpenCode or companion plugins. The model is given restricted file manipulation tools (`read_file`, `list_files`, `write_file`, `delete_file`, `finish_candidate`) strictly confined to the assigned worktree.
+
+See the [Native llama.cpp Guide](docs/native-llama-cpp.md) and [examples/controller.llama-cpp.bonsai.json](examples/controller.llama-cpp.bonsai.json).
+
+### 3. Native agy Connector
+
+An opt-in connector providing process isolation and token accounting for pinned [agy](docs/agy-connector.md) CLI workflows. See [examples/controller.agy.json](examples/controller.agy.json).
+
+---
+
+## Verification and Evidence Contracts
+
+### Exit-Status Checks
+
+Standard checks pass if the verification command exits with return code `0`.
+
+### Structured Result Contracts
+
+For checks that must prove tests actually ran (preventing false passes from no-op or skipped runs), configure a `result_contract`:
 
 ```json
-{"passed":true,"skipped":false,"commit":"<exact tested commit>","evidence_type":"cpu_tests","executed":12,"failed":0}
+{
+  "id": "unit-tests",
+  "argv": ["python3", "scripts/run-tests.py"],
+  "result_contract": {
+    "evidence_type": "unit_tests"
+  }
+}
 ```
 
-For a goal requiring Vulkan execution, include `vulkan_execution` in `required_evidence`. Shader compilation, CPU reference tests and a Vulkan inventory probe cannot satisfy it. The trusted device execution verifier must additionally return a positive integer `gpu_dispatches`, `validation_passed:true`, and a `device` object containing `name`, `vendor_id` and `device_id`, based on actual dispatch/output validation. Missing devices, zero dispatches and skipped tests fail acceptance. These fields are validated from host-approved verifier output, not worker messages. The trusted verifier remains responsible for exercising representative behavior and authenticating its device/result evidence.
+The verifier command must print a single JSON object to `stdout`:
 
-Completion requirements cannot be removed on resume, and previously approved completion commands cannot be changed or removed; additional checks may be appended. Existing old manifests with no final suite no longer qualify for completion. An optional `verification_environment` allows only PATH, Rust/Cargo paths/toolchain, Vulkan driver selection and XDG runtime path; operator/worker capabilities are not inherited.
+```json
+{
+  "commit": "<FACTORY_VERIFICATION_COMMIT>",
+  "evidence_type": "unit_tests",
+  "passed": true,
+  "skipped": false,
+  "executed": 42,
+  "failed": 0
+}
+```
 
-The runner records the canonical repository and effective verifier environment, including PATH, with an acceptance-policy digest. Resume rejects changes to those inputs. Older states record their first policy snapshot and require fresh acceptance before retaining a previous completion claim. Setup, missing-command, timeout and malformed-result errors persist as `acceptance_failed` with retained logs and retry guidance. Final evidence must explicitly report `skipped:false` or `skipped_count:0`, with no contradictory skip fields. Non-Vulkan checks must report integer `executed > 0` and integer `failed == 0`; any provided counts must report positive execution and zero failures/skips.
+The controller injects `FACTORY_VERIFICATION_COMMIT` into the verifier's environment. The reported commit must match exactly, `executed` must be greater than zero, and `failed` must equal zero. Missing or mismatched results fail verification regardless of exit code.
 
-A milestone's `done` means its declared independent checks and archive delivery passed. It does not mean the broad backend goal is finished. Backend acceptance must include the required CPU compatibility and Vulkan execution checks in its final contract.
+---
 
-## Verifier-owned process completion
+## Sustained Backlogs and Goal Runner
 
-Trusted verification commands now run through a Linux subreaper/pidfd helper.
-A zero root exit cannot pass while owned descendants remain live; executor
-observations remain separate from program/model stdout. Completed verification
-reuses checked receipts, while interrupted/unknown effects block automatic replay.
-See [lifecycle guarantees, recovery limits and tests](docs/verifier-process-lifecycle.md).
-This does not establish process ownership for externally managed OpenCode tools or
-24/7 readiness.
+For multi-step feature sets or multi-task backlogs, `code-factory-controller run` executes a sequential manifest of approved jobs:
 
-## Trace-driven improvement (offline)
+```sh
+code-factory-controller run \
+  --manifest /path/to/goal.json \
+  --state /path/to/goal-state.json \
+  --url http://127.0.0.1:4317 \
+  --max-seconds 86400
+```
 
-The [trace ledger and readiness plan](docs/trace-ledger.md) provides bounded,
-provenance-preserving import and deterministic replay of explicitly reviewed
-sanitized summaries. It keeps Code Factory, research, historical and mock outcomes
-separate, flags lifecycle/reporting inconsistencies, and never treats traces as
-job authorization. It makes no provider calls and does not enable unattended
-operation. Run its offline regressions with `python3 scripts/test-trace-ledger.py`.
+- **Chained Integration**: Each completed task integrates into the integration ref and becomes the base commit for the subsequent task.
+- **Rework Fencing**: If candidate verification fails, diagnostics are preserved and forwarded to the next attempt as rework context while keeping original constraints fixed.
+- **Mandatory Final Acceptance**: Whole-goal completion requires all tasks to succeed followed by passing a clean-checkout acceptance test suite on the final integrated commit.
 
-## Validation and scope
+---
 
-The test suite covers durable replay, restart recovery, independent verification, altered evidence, stale leases, protected paths, parallel integration and conflicts, provider policy, operator isolation, timeouts and adapter reconciliation. The independently packaged plugin's contract also passes against the Rust service.
+## Schemas and Contracts
 
-Live Big Pickle runs completed a bounded hardening change in the plugin repository both without and with plugin assistance. Both passed trusted candidate and integrated checks, delivered a checked archive, and survived a controller-process restart. The source repository was used in a disposable clone; the delivered change is a local artifact, not a claim that its upstream branch was changed. See [validation evidence and limits](docs/validation.md).
+- Core schemas are stored under `schemas/`:
+  - `schemas/config.json`
+  - `schemas/approved-job.json`
+  - `schemas/verification-receipt.json`
+  - `schemas/worker-request.json`
+- Regenerate schemas from Rust definitions:
+  ```sh
+  cargo run --locked -- schemas --output schemas
+  ```
+- Client contracts for Protocol 0.1 are pinned under `contracts/plugin-0.1/`.
 
-An opt-in [foreground shared research launcher](docs/research-dispatch.md) coordinates a fixed approved goal list with one shared worker slot and independent acceptance. The [local read-only dashboard](dashboard/README.md) displays existing state and receipts. Opt-in [GitHub review delivery](docs/github-review-delivery.md) and [verified main publication](docs/main-publication.md) require explicit owner configuration. Dynamic multi-project scheduling, deployment adapters, paid models and distributed workers remain outside this release. See [release changes](CHANGELOG.md). [MIT license](LICENSE); [dependency and contract notices](THIRD_PARTY_NOTICES.md).
+---
 
-## Private review snapshot
+## Documentation Index
 
-This review includes the independent verifier process lifecycle, explicit native
-OpenCode2.0.29 execution observation, owned background-shell waiting/cancellation,
-and the opt-in foreground shared research dispatcher. See [current checks and
-limits](docs/private-review-validation.md). Runtime profiles, credentials, native
-conversations, private data and research results are intentionally excluded.
-A reviewed branch is not a release, deployment or scientific-success claim.
+- [Architecture & State Machine](docs/architecture.md): Durable transitions, recovery boundaries, and execution models.
+- [Protocol 0.1 Specification](docs/protocol.md): HTTP contract for worker capabilities and tool interactions.
+- [Verifier Process Lifecycle](docs/verifier-process-lifecycle.md): Linux subreaper and `pidfd` process containment.
+- [Native llama.cpp Connector](docs/native-llama-cpp.md): Direct local inference integration.
+- [OpenCode V2 Authority](docs/opencode-v2-authority.md): External execution observation and recovery.
+- [Trace Ledger](docs/trace-ledger.md): Provenance-preserving record and deterministic replay.
+- [GitHub Review Delivery](docs/github-review-delivery.md): Private pull request updates after verified integration.
+- [Verified Main Publication](docs/main-publication.md): Gated publication workflows with preflight CI checks.
+- [Local Web Dashboard](dashboard/README.md): Read-only browser dashboard for inspecting state and receipts.
+
+---
+
+## License
+
+This project is licensed under the [MIT License](LICENSE). Third-party notices and contract attributions are maintained in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
