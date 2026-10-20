@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.0
+
+- Add `code-factory-controller setup --output PATH`, a controller-less guided TUI
+  for creating project configuration with inline validation, profile/check and
+  model-policy fields, and an exact JSON review before saving.
+- Document guided setup in the Quickstart and streamline the README.
+- Remove obsolete review artifacts from the documentation.
+
+This release retains the existing protocol, runtime pins, execution policy, and
+release updater behavior. It does not restart running controllers or jobs.
+
 ## 0.4.0
 
 - Add tag-triggered GitHub release publication gated by full verification and
