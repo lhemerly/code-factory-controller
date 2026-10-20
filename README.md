@@ -115,7 +115,17 @@ Create a project configuration file (see [examples/controller.json](examples/con
 > [!IMPORTANT]
 > The `data_dir` and `delivery_dir` directories must reside outside the worker repository to prevent workers from tampering with controller state or artifacts.
 
-### 2. Start the Controller Service
+### 2. Generate a Config File (Optional)
+
+If you don't already have a `controller.json`, use the guided setup wizard:
+
+```sh
+code-factory-controller setup --output /path/to/controller.json
+```
+
+This launches a full-screen TUI that walks you through every field — project paths, profiles, checks, model policy, worker limits, and OpenCode URL — with inline validation and a review stage before writing the file.
+
+### 3. Start the Controller Service
 
 Generate an operator token and launch the service:
 
